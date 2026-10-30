@@ -16,7 +16,7 @@ permissions:
 
 concurrency:
   group: pages
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -36,7 +36,7 @@ jobs:
       - run: pip install -r requirements.txt
 
       # 받은 데이터 저장본(output/.*.csv 등)을 다음 실행에 넘겨서 매번 처음부터 받지 않게 한다
-      - uses: actions/cache@v4
+      - uses: actions/cache/restore@v4
         with:
           path: |
             kr_macro/output/.*.csv
@@ -61,10 +61,21 @@ jobs:
           done
 
       - name: 대시보드 만들기
+        timeout-minutes: 25
         env:
           PYTHONUTF8: '1'
+          PYTHONUNBUFFERED: '1'
           TZ: Asia/Seoul
         run: python kr_macro/build.py
+
+      # 빌드가 실패해도 그때까지 받은 저장본은 남겨서 다음 실행이 이어 받게 한다
+      - uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: |
+            kr_macro/output/.*.csv
+            kr_macro/output/.*.json
+          key: data-${{ github.run_id }}
 
       - name: 사이트 파일 준비
         run: |

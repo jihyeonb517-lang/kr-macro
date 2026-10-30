@@ -23,6 +23,7 @@ from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
+import requests.adapters
 import yfinance as yf
 
 import events
@@ -51,6 +52,16 @@ def load_env(path):
 
 
 ENV = load_env(ROOT / ".env")
+
+_http_send = requests.adapters.HTTPAdapter.send
+
+
+def _http_send_with_timeout(self, request, stream=False, timeout=None, **kwargs):
+    """pykrx는 응답 대기 시간을 정하지 않아 KRX가 답을 안 하면 끝없이 기다린다. 기본 60초로 끊는다."""
+    return _http_send(self, request, stream=stream, timeout=timeout or 60, **kwargs)
+
+
+requests.adapters.HTTPAdapter.send = _http_send_with_timeout
 
 
 class MissingKey(Exception):
