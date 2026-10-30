@@ -1,0 +1,80 @@
+name: 대시보드 갱신
+
+on:
+  schedule:
+    # 한국 시간 08:00 (매일) · 16:30 (평일, 장 마감 뒤)
+    - cron: '0 23 * * *'
+    - cron: '30 7 * * 1-5'
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      # 받은 데이터 저장본(output/.*.csv 등)을 다음 실행에 넘겨서 매번 처음부터 받지 않게 한다
+      - uses: actions/cache@v4
+        with:
+          path: |
+            kr_macro/output/.*.csv
+            kr_macro/output/.*.json
+          key: data-${{ github.run_id }}
+          restore-keys: data-
+
+      # 키는 저장소 Settings → Secrets and variables → Actions 에 넣는다. 비어 있는 키는 그 항목만 빠진다.
+      - name: .env 만들기
+        env:
+          ECOS_API_KEY: ${{ secrets.ECOS_API_KEY }}
+          KRX_ID: ${{ secrets.KRX_ID }}
+          KRX_PW: ${{ secrets.KRX_PW }}
+          KRX_API_KEY: ${{ secrets.KRX_API_KEY }}
+          DATA_GO_KR_KEY: ${{ secrets.DATA_GO_KR_KEY }}
+          DART_API_KEY: ${{ secrets.DART_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          NEWS_SUMMARY_MODEL: ${{ secrets.NEWS_SUMMARY_MODEL }}
+        run: |
+          for k in ECOS_API_KEY KRX_ID KRX_PW KRX_API_KEY DATA_GO_KR_KEY DART_API_KEY ANTHROPIC_API_KEY NEWS_SUMMARY_MODEL; do
+            printf '%s=%s\n' "$k" "${!k}" >> kr_macro/.env
+          done
+
+      - name: 대시보드 만들기
+        env:
+          PYTHONUTF8: '1'
+          TZ: Asia/Seoul
+        run: python kr_macro/build.py
+
+      - name: 사이트 파일 준비
+        run: |
+          mkdir -p site
+          cp kr_macro/output/dashboard.html site/index.html
+          rm -f kr_macro/.env
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - id: deploy
+        uses: actions/deploy-pages@v4

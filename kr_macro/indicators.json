@@ -1,0 +1,301 @@
+{
+  "_설명": "구간(zones)·의미 문구·판정 신호 설정. 이 파일만 고치면 대시보드와 엑셀에 반영됩니다. API 키는 여기에 넣지 말고 .env에 넣습니다. zones는 위에서부터 '현재값 < max'이면 그 구간, max가 null이면 마지막 구간. signal: +1 우호, 0 중립, -1 부담. color: red, orange, yellow, gray, blue, green, dkgreen. better: 지표가 어느 쪽으로 움직여야 증시에 좋은지(higher/lower).",
+
+  "groups": [
+    {"id": "money",     "name": "돈의 환경",   "labels": {"pos": "우호", "neu": "중립", "neg": "부담"}},
+    {"id": "economy",   "name": "경기",        "labels": {"pos": "양호", "neu": "중립", "neg": "약화"}},
+    {"id": "internals", "name": "시장 내부",   "labels": {"pos": "강함", "neu": "보통", "neg": "약함"}},
+    {"id": "sentiment", "name": "심리 · 변동성", "labels": {"pos": "안정", "neu": "중립", "neg": "공포 쪽"}}
+  ],
+
+  "indicators": [
+    {
+      "id": "usdkrw", "group": "money", "star": true,
+      "name": "원/달러 환율", "sub": "높을수록 원화 약세 · 외국인 환차손 부담",
+      "calc": {"src": "yahoo", "ticker": "KRW=X"}, "freq": "daily",
+      "unit": "원", "decimals": 1, "better": "lower", "pct_since": "2010",
+      "range": [1100, 1550],
+      "zones": [
+        {"max": 1200, "label": "원화 강세", "color": "green",  "signal": 1,  "meaning": "외국인 자금 유입에 우호적"},
+        {"max": 1350, "label": "중립",     "color": "gray",   "signal": 0,  "meaning": "평소 범위"},
+        {"max": 1450, "label": "원화 약세", "color": "orange", "signal": -1, "meaning": "외국인 환차손 부담 · 매도 압력"},
+        {"max": null, "label": "급등",     "color": "red",    "signal": -1, "meaning": "자금 이탈 · 위기성 환율"}
+      ]
+    },
+    {
+      "id": "kr_curve", "group": "money",
+      "name": "한국 10Y − 3M", "sub": "국고채 10년 − 은행간 3개월 금리 · 월평균 · 국채 커브 대용",
+      "calc": {"src": "fred_spread", "a": "IRLTLT01KRM156N", "b": "IR3TIB01KRM156N"}, "freq": "monthly",
+      "unit": "%p", "decimals": 2, "better": "higher", "pct_since": "2005",
+      "range": [-1.5, 2.5],
+      "zones": [
+        {"max": 0,    "label": "역전", "color": "orange", "signal": -1, "meaning": "경기 둔화 우려 신호"},
+        {"max": 0.5,  "label": "평탄", "color": "gray",   "signal": 0,  "meaning": "장단기 금리 차이 작음"},
+        {"max": null, "label": "정상", "color": "green",  "signal": 1,  "meaning": "장기 금리가 충분히 높음 · 성장 기대"}
+      ]
+    },
+    {
+      "id": "us_real", "group": "money",
+      "name": "미국 실질금리 10Y", "sub": "물가 뺀 금리 · 글로벌 할인율",
+      "calc": {"src": "fred", "series": "DFII10"}, "freq": "daily",
+      "unit": "%", "decimals": 2, "better": "lower", "pct_since": "2010",
+      "range": [-1.5, 3.5],
+      "zones": [
+        {"max": 1,    "label": "완화", "color": "green",  "signal": 1,  "meaning": "할인율 부담 낮음 · 성장주 우호"},
+        {"max": 2,    "label": "중립", "color": "gray",   "signal": 0,  "meaning": "평소 범위"},
+        {"max": null, "label": "부담", "color": "orange", "signal": -1, "meaning": "할인율 부담 · 신흥국 자금 유출 압력"}
+      ]
+    },
+    {
+      "id": "dxy", "group": "money",
+      "name": "달러인덱스", "sub": "주요 6개 통화 대비 달러 가치",
+      "calc": {"src": "yahoo", "ticker": "DX-Y.NYB"}, "freq": "daily",
+      "unit": "", "decimals": 1, "better": "lower", "pct_since": "2010",
+      "range": [85, 115],
+      "zones": [
+        {"max": 95,   "label": "약달러", "color": "green",  "signal": 1,  "meaning": "신흥국 · 한국 증시에 우호"},
+        {"max": 105,  "label": "중립",   "color": "gray",   "signal": 0,  "meaning": "평소 범위"},
+        {"max": null, "label": "강달러", "color": "orange", "signal": -1, "meaning": "신흥국 자금 이탈 압력"}
+      ]
+    },
+
+    {
+      "id": "exports", "group": "economy", "star": true,
+      "name": "한국 수출 증가율", "sub": "관세청 통관 수출 달러액 · 최근 3개월 합계 전년비",
+      "calc": {"src": "customs_yoy3m", "column": "total", "fallback_series": "XTEXVA01KRM667S"}, "freq": "monthly",
+      "unit": "%", "decimals": 1, "better": "higher", "pct_since": "2005",
+      "range": [-30, 40],
+      "zones": [
+        {"max": -5,   "label": "감소", "color": "red",     "signal": -1, "meaning": "수출 위축 · 이익 하향 압력"},
+        {"max": 3,    "label": "정체", "color": "gray",    "signal": 0,  "meaning": "뚜렷한 방향 없음"},
+        {"max": 15,   "label": "증가", "color": "green",   "signal": 1,  "meaning": "수출 회복 · 이익 개선 기대"},
+        {"max": null, "label": "호황", "color": "dkgreen", "signal": 1,  "meaning": "강한 수출 사이클 (고점 근처일 수 있음)"}
+      ]
+    },
+    {
+      "id": "sox_gap", "group": "economy", "star": true,
+      "name": "반도체지수 200일선 대비", "sub": "필라델피아 반도체지수(SOX) 이격도 · 반도체 사이클 대용",
+      "calc": {"src": "yahoo_ma_gap", "ticker": "^SOX", "window": 200}, "freq": "daily",
+      "unit": "%", "decimals": 1, "better": "higher", "pct_since": "2010",
+      "range": [-30, 40],
+      "zones": [
+        {"max": -10,  "label": "하락 추세", "color": "red",     "signal": -1, "meaning": "반도체 업황 기대 약화"},
+        {"max": 0,    "label": "약화",     "color": "orange",  "signal": 0,  "meaning": "장기 추세 아래로 밀림"},
+        {"max": 20,   "label": "상승 추세", "color": "green",   "signal": 1,  "meaning": "반도체 사이클 우호"},
+        {"max": null, "label": "과열",     "color": "dkgreen", "signal": 0,  "meaning": "단기 과열 가능"}
+      ]
+    },
+    {
+      "id": "hy", "group": "economy", "star": true,
+      "name": "하이일드 스프레드", "sub": "미국 투기등급 회사채 가산금리 · 글로벌 신용 위험",
+      "calc": {"src": "fred", "series": "BAMLH0A0HYM2"}, "freq": "daily",
+      "unit": "%p", "decimals": 2, "better": "lower", "pct_since": "2023",
+      "range": [2, 9],
+      "zones": [
+        {"max": 3.5,  "label": "정상",    "color": "blue",   "signal": 1,  "meaning": "신용시장 안정"},
+        {"max": 4.5,  "label": "주의",    "color": "yellow", "signal": 0,  "meaning": "신용 위험 경계"},
+        {"max": 6,    "label": "스트레스", "color": "orange", "signal": -1, "meaning": "신용 경색 조짐"},
+        {"max": null, "label": "위기",    "color": "red",    "signal": -1, "meaning": "신용 위기 국면"}
+      ]
+    },
+    {
+      "id": "cli", "group": "economy",
+      "name": "경기선행지수 순환변동치", "sub": "통계청 (한국은행 ECOS) · 100 위 확장, 아래 수축 · 월간",
+      "calc": {"src": "ecos", "stat": "901Y067", "item": "I16E"}, "freq": "monthly",
+      "unit": "", "decimals": 1, "better": "higher", "pct_since": "2000",
+      "range": [95, 106],
+      "zones": [
+        {"max": 98.5, "label": "하강",     "color": "orange",  "signal": -1, "meaning": "기준선(100) 크게 아래 · 경기 하강 국면"},
+        {"max": 100,  "label": "기준선 아래", "color": "gray", "signal": 0,  "meaning": "전월보다 오르면 회복, 내리면 둔화"},
+        {"max": 101.5, "label": "확장",    "color": "green",   "signal": 1,  "meaning": "기준선 위 · 경기 확장 국면"},
+        {"max": null, "label": "확장 후반", "color": "dkgreen", "signal": 0,  "meaning": "고점 근처일 수 있음"}
+      ]
+    },
+
+    {
+      "id": "breadth200", "group": "internals", "star": true,
+      "name": "200일선 위 종목 %", "sub": "대형주 표본 중 장기 추세 위 비율",
+      "calc": {"src": "breadth", "window": 200}, "freq": "daily",
+      "unit": "%", "decimals": 1, "better": "higher", "pct_since": "1y",
+      "range": [0, 100],
+      "zones": [
+        {"max": 20,   "label": "극단적 약세", "color": "red",     "signal": -1, "meaning": "대부분 종목이 장기 추세 아래"},
+        {"max": 40,   "label": "약세",       "color": "orange",  "signal": -1, "meaning": "장기 추세 이탈 종목 다수"},
+        {"max": 60,   "label": "중립",       "color": "gray",    "signal": 0,  "meaning": "강약 혼재"},
+        {"max": 80,   "label": "강세",       "color": "green",   "signal": 1,  "meaning": "다수 종목이 장기 추세 위"},
+        {"max": null, "label": "과열",       "color": "dkgreen", "signal": 0,  "meaning": "쏠림 · 과열 주의"}
+      ]
+    },
+    {
+      "id": "breadth50", "group": "internals",
+      "name": "50일선 위 종목 %", "sub": "대형주 표본 중 단기 추세 위 비율",
+      "calc": {"src": "breadth", "window": 50}, "freq": "daily",
+      "unit": "%", "decimals": 1, "better": "higher", "pct_since": "1y",
+      "range": [0, 100],
+      "zones": [
+        {"max": 20,   "label": "극단적 약세", "color": "red",     "signal": -1, "meaning": "대부분 종목이 단기 추세 아래"},
+        {"max": 40,   "label": "약세",       "color": "orange",  "signal": -1, "meaning": "단기 추세 이탈 종목 다수"},
+        {"max": 60,   "label": "중립",       "color": "gray",    "signal": 0,  "meaning": "강약 혼재"},
+        {"max": 80,   "label": "강세",       "color": "green",   "signal": 1,  "meaning": "다수 종목이 단기 추세 위"},
+        {"max": null, "label": "과열",       "color": "dkgreen", "signal": 0,  "meaning": "단기 쏠림 · 과열 주의"}
+      ]
+    },
+    {
+      "id": "kospi_gap", "group": "internals",
+      "name": "코스피 200일선 이격도", "sub": "지수가 장기 평균에서 떨어진 정도",
+      "calc": {"src": "yahoo_ma_gap", "ticker": "^KS11", "window": 200}, "freq": "daily",
+      "unit": "%", "decimals": 1, "better": "higher", "pct_since": "2010",
+      "range": [-25, 25],
+      "zones": [
+        {"max": -10,  "label": "급락", "color": "red",     "signal": -1, "meaning": "장기 추세 크게 이탈"},
+        {"max": -3,   "label": "약세", "color": "orange",  "signal": -1, "meaning": "장기 추세 아래"},
+        {"max": 3,    "label": "중립", "color": "gray",    "signal": 0,  "meaning": "장기 추세 근처"},
+        {"max": 15,   "label": "강세", "color": "green",   "signal": 1,  "meaning": "장기 추세 위"},
+        {"max": null, "label": "과열", "color": "dkgreen", "signal": 0,  "meaning": "이격 과대 · 과열 주의"}
+      ]
+    },
+    {
+      "id": "foreign_net", "group": "internals",
+      "name": "외국인 순매수 (20일)", "sub": "코스피 · 20일 누적 순매수 ÷ 같은 기간 거래대금 (KRX)",
+      "calc": {"src": "krx_foreign_ratio", "market": "KOSPI", "window": 20}, "freq": "daily",
+      "unit": "%", "decimals": 2, "better": "higher", "pct_since": "2010",
+      "range": [-8, 8],
+      "zones": [
+        {"max": -4,   "label": "대규모 순매도", "color": "red",     "signal": -1, "meaning": "외국인 이탈 · 2010년 이후 하위 5% 수준"},
+        {"max": -1.5, "label": "순매도 우위",  "color": "orange",  "signal": -1, "meaning": "외국인 매도가 매수보다 많음"},
+        {"max": 1.5,  "label": "중립",        "color": "gray",    "signal": 0,  "meaning": "뚜렷한 방향 없음"},
+        {"max": 4,    "label": "순매수 우위",  "color": "green",   "signal": 1,  "meaning": "외국인 자금 유입"},
+        {"max": null, "label": "대규모 순매수", "color": "dkgreen", "signal": 1,  "meaning": "강한 유입 · 2010년 이후 상위 5% 수준"}
+      ]
+    },
+
+    {
+      "id": "vix", "group": "sentiment", "star": true,
+      "name": "VIX", "sub": "미국 CBOE 30일 예상 변동성 · Yahoo 실패 시 FRED 종가",
+      "calc": {"src": "yahoo", "ticker": "^VIX", "fallback_series": "VIXCLS"}, "freq": "daily",
+      "unit": "", "decimals": 1, "better": "lower", "pct_since": "1y",
+      "range": [9, 50],
+      "zones": [
+        {"max": 20,   "label": "정상",       "color": "blue",   "signal": 1,  "meaning": "주식시장 불안 낮음"},
+        {"max": 25,   "label": "경계",       "color": "yellow", "signal": 0,  "meaning": "불안 확대"},
+        {"max": 35,   "label": "공포",       "color": "orange", "signal": -1, "meaning": "위험 회피 우세"},
+        {"max": null, "label": "극단적 공포", "color": "red",    "signal": -1, "meaning": "투매 국면"}
+      ]
+    },
+    {
+      "id": "kospi_rv", "group": "sentiment", "star": true,
+      "name": "코스피 실현변동성", "sub": "최근 20거래일 · 연율 % (VKOSPI 대용)",
+      "calc": {"src": "yahoo_rv", "ticker": "^KS11", "window": 20}, "freq": "daily",
+      "unit": "%", "decimals": 1, "better": "lower", "pct_since": "2010",
+      "range": [5, 60],
+      "zones": [
+        {"max": 15,   "label": "안정", "color": "blue",   "signal": 1,  "meaning": "가격 움직임 차분"},
+        {"max": 25,   "label": "보통", "color": "gray",   "signal": 0,  "meaning": "평소 범위"},
+        {"max": 35,   "label": "불안", "color": "orange", "signal": -1, "meaning": "변동성 확대"},
+        {"max": null, "label": "극단", "color": "red",    "signal": -1, "meaning": "변동성 폭발 · 급등락 국면"}
+      ]
+    },
+    {
+      "id": "credit", "group": "sentiment",
+      "name": "신용잔고", "sub": "코스피 신용거래융자 ÷ 코스피 시가총액 · 빚내서 산 주식 비중 (금융투자협회)",
+      "calc": {"src": "kofia_cap_ratio", "table": "STATSCU0100000070BO", "column": "TMPV3"}, "freq": "daily",
+      "unit": "%", "decimals": 2, "better": "lower", "pct_since": "2010",
+      "range": [0.15, 0.65],
+      "zones": [
+        {"max": 0.25, "label": "낮음", "color": "blue",   "signal": 1,  "meaning": "빚투 부담 적음"},
+        {"max": 0.4,  "label": "보통", "color": "gray",   "signal": 0,  "meaning": "평소 범위"},
+        {"max": 0.52, "label": "높음", "color": "orange", "signal": -1, "meaning": "빚투 많음 · 급락 시 반대매매 부담"},
+        {"max": null, "label": "과열", "color": "red",    "signal": -1, "meaning": "2010년 이후 상위 10% · 2021년 고점(0.57%) 수준"}
+      ]
+    },
+    {
+      "id": "deposit", "group": "sentiment",
+      "name": "고객예탁금", "sub": "투자자예탁금 ÷ 코스피 시가총액 · 증시 대기 자금 (금융투자협회)",
+      "calc": {"src": "kofia_cap_ratio", "table": "STATSCU0100000060BO", "column": "TMPV2"}, "freq": "daily",
+      "unit": "%", "decimals": 2, "better": "higher", "pct_since": "2010",
+      "range": [1.0, 4.2],
+      "zones": [
+        {"max": 1.4,  "label": "부족",     "color": "orange",  "signal": -1, "meaning": "시장 규모에 비해 대기 자금이 적음"},
+        {"max": 2.5,  "label": "보통",     "color": "gray",    "signal": 0,  "meaning": "평소 범위"},
+        {"max": 3.2,  "label": "풍부",     "color": "green",   "signal": 1,  "meaning": "매수 여력이 쌓여 있음"},
+        {"max": null, "label": "매우 풍부", "color": "dkgreen", "signal": 1,  "meaning": "급락 뒤 현금이 몰린 상태가 많음 (2020년 3월 3.9%)"}
+      ]
+    }
+  ],
+
+  "sectors": {
+    "_설명": "섹터 흐름: 월별 섹터 ETF 수익률 − 기준 ETF 수익률 (%p). 섹터를 바꾸려면 Yahoo 티커(종목코드.KS)를 넣으면 됩니다.",
+    "benchmark": {"name": "KODEX 200", "ticker": "069500.KS"},
+    "months": 12,
+    "items": [
+      {"name": "반도체",     "ticker": "091160.KS"},
+      {"name": "자동차",     "ticker": "091180.KS"},
+      {"name": "2차전지",    "ticker": "305720.KS"},
+      {"name": "조선",       "ticker": "466920.KS"},
+      {"name": "방산",       "ticker": "449450.KS"},
+      {"name": "헬스케어",   "ticker": "266420.KS"},
+      {"name": "에너지화학", "ticker": "117460.KS"},
+      {"name": "철강",       "ticker": "117680.KS"},
+      {"name": "건설",       "ticker": "117700.KS"},
+      {"name": "은행",       "ticker": "091170.KS"},
+      {"name": "증권",       "ticker": "102970.KS"},
+      {"name": "보험",       "ticker": "140700.KS"},
+      {"name": "필수소비재", "ticker": "266410.KS"},
+      {"name": "경기소비재", "ticker": "266390.KS"},
+      {"name": "화장품",     "ticker": "228790.KS"},
+      {"name": "미디어",     "ticker": "228810.KS"},
+      {"name": "운송",       "ticker": "140710.KS"}
+    ]
+  },
+
+  "companies": [
+    {"id": "samsung", "tab": "삼성전자", "name": "삼성전자", "eng": "Samsung Electronics",
+     "ticker": "005930", "yahoo": "005930.KS", "dart": "00126380", "market": "KOSPI", "sector": "전기·전자"},
+    {"id": "hynix", "tab": "하이닉스", "name": "SK하이닉스", "eng": "SK hynix",
+     "ticker": "000660", "yahoo": "000660.KS", "dart": "00164779", "market": "KOSPI", "sector": "전기·전자"}
+  ],
+
+  "exports": {
+    "_설명": "관세청 품목별 수출입실적(공공데이터포털). 수출은 FOB 달러. hs는 HSK 코드 앞자리(여러 개면 합산). 반도체 = 집적회로(HS 8542) 전체.",
+    "semis_hs": ["8542"],
+    "first_month": "2000-01",
+    "items": [
+      {"name": "DRAM", "hs": ["8542321010"]},
+      {"name": "MCP (HBM 포함)", "hs": ["8542323000"]},
+      {"name": "SSD", "hs": ["8523511000"]},
+      {"name": "낸드 (플래시)", "hs": ["8542321030"]},
+      {"name": "프로세서·컨트롤러", "hs": ["8542311000"]},
+      {"name": "메모리 MCO", "hs": ["8542324000"]},
+      {"name": "기타 집적회로", "hs": ["854239"]},
+      {"name": "반도체 장비", "hs": ["8486"]}
+    ]
+  },
+
+  "period_assets": [
+    {"name": "코스피",       "ticker": "^KS11",    "decimals": 0},
+    {"name": "코스닥",       "ticker": "^KQ11",    "decimals": 0},
+    {"name": "S&P500",      "ticker": "^GSPC",    "decimals": 0},
+    {"name": "나스닥",       "ticker": "^IXIC",    "decimals": 0},
+    {"name": "필라델피아 반도체", "ticker": "^SOX", "decimals": 0},
+    {"name": "원/달러",      "ticker": "KRW=X",    "decimals": 1},
+    {"name": "달러인덱스",    "ticker": "DX-Y.NYB", "decimals": 2},
+    {"name": "금",          "ticker": "GC=F",     "decimals": 0},
+    {"name": "WTI",         "ticker": "CL=F",     "decimals": 2}
+  ],
+
+  "breadth_universe": [
+    "005930.KS", "000660.KS", "373220.KS", "207940.KS", "005380.KS", "000270.KS", "068270.KS", "005490.KS",
+    "035420.KS", "035720.KS", "051910.KS", "006400.KS", "105560.KS", "055550.KS", "012330.KS", "028260.KS",
+    "066570.KS", "003550.KS", "032830.KS", "086790.KS", "015760.KS", "034730.KS", "096770.KS", "017670.KS",
+    "030200.KS", "033780.KS", "009150.KS", "018260.KS", "010130.KS", "011200.KS", "012450.KS", "329180.KS",
+    "009540.KS", "042660.KS", "034020.KS", "010950.KS", "003670.KS", "138040.KS", "316140.KS", "024110.KS",
+    "000810.KS", "259960.KS", "352820.KS", "323410.KS", "011170.KS", "090430.KS", "097950.KS", "267260.KS",
+    "064350.KS", "047810.KS", "010140.KS", "000100.KS", "128940.KS", "271560.KS", "036570.KS", "251270.KS",
+    "004020.KS", "000720.KS", "006800.KS", "071050.KS", "029780.KS", "302440.KS", "326030.KS", "003490.KS",
+    "180640.KS", "001040.KS", "078930.KS", "006260.KS", "010120.KS", "241560.KS", "004990.KS", "023530.KS",
+    "139480.KS", "282330.KS", "007070.KS", "161390.KS", "005830.KS", "001450.KS", "039490.KS", "016360.KS",
+    "005940.KS", "036460.KS", "051900.KS", "032640.KS", "011070.KS", "034220.KS", "000880.KS", "009830.KS",
+    "298040.KS", "402340.KS", "112610.KS", "079550.KS", "272210.KS",
+    "247540.KQ", "086520.KQ", "196170.KQ", "028300.KQ", "042700.KS"
+  ]
+}

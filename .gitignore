@@ -1,0 +1,6 @@
+# API 키와 로그인 정보는 절대 올리지 않는다
+.env
+*.env
+__pycache__/
+# 결과물과 받은 데이터 저장본은 GitHub Actions가 매번 새로 만든다
+kr_macro/output/
