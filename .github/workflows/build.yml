@@ -79,8 +79,7 @@ jobs:
 
       - name: 사이트 파일 준비
         run: |
-          mkdir -p site
-          cp kr_macro/output/dashboard.html site/index.html
+          python kr_macro/prepare_public_site.py
           rm -f kr_macro/.env
 
       - uses: actions/upload-pages-artifact@v3

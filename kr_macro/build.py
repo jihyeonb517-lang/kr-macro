@@ -28,6 +28,7 @@ import yfinance as yf
 
 import events
 import news
+import cosmetics
 
 warnings.filterwarnings("ignore", category=DeprecationWarning,
                         message="The 'generic' unit for NumPy timedelta is deprecated.*")
@@ -410,6 +411,7 @@ DART_REPORTS = [("11013", 3), ("11012", 6), ("11014", 9), ("11011", 12)]  # 1분
 DART_CF = {
     "CashFlowsFromUsedInOperatingActivities": "ocf",                # 영업활동현금흐름
     "CashFlowsFromUsedInOperations": "ops",                         # 영업에서 창출된 현금 (이자·배당·법인세 전)
+    "NetCashflowsFromUsedInOperations": "ops",                      # 같은 항목의 DART 표준계정명 (에이피알 등)
     "AdjustmentsForReconcileProfitLoss": "adj",                     # 비현금 조정 (감가상각비 등) — 삼성전자만 본문에 있음
     "AdjustmentsForAssetsLiabilitiesOfOperatingActivities": "wc",   # 운전자본 변동 — 삼성전자만 본문에 있음
     "PurchaseOfPropertyPlantAndEquipment": "ppe",                   # 유형자산의 취득
@@ -506,7 +508,7 @@ def fcf_analysis(corp):
     if v("adj") is not None and v("wc") is not None:
         rows += [("비현금 조정<small>감가상각비 등</small>", v("adj")), ("운전자본 변동", v("wc"))]
     elif ops is not None and ni is not None:
-        rows += [("비현금 조정·운전자본<small>감가상각비 포함 · 공시 본문에 나눠 있지 않음</small>", ops - ni)]
+        rows += [("비현금 조정·운전자본<small>영업창출현금 − 순이익</small>", ops - ni)]
     if ops is not None:
         rows += [("이자·배당·법인세", ocf - ops)]
     rows += [("영업활동현금흐름", ocf, "sub"), ("자본적지출<small>유형+무형자산 취득</small>", -capex), ("잉여현금흐름", ocf - capex, "total")]
@@ -612,8 +614,13 @@ def report_summary(ticker, price):
 CUSTOMS_URL ="https://apis.data.go.kr/1220000/Itemtrade/getItemtradeList"
 
 
-def _customs_month(month):
-    """한 달 전체 품목 수출(달러): 총계 + 설정한 HS 묶음별 합계. 아직 발표 전이면 None."""
+MOTIR_URL = "https://www.motir.go.kr"
+MOTIR_LIST = "/kor/article/ATCL3f49a5a8c?searchKeyword=" + urllib.parse.quote("수출입 동향")
+
+
+@lru_cache(maxsize=None)
+def _customs_rows(month):
+    """한 번 받은 월별 원자료를 수출 탭들과 함께 사용한다."""
     query = urllib.parse.urlencode({"serviceKey": ENV["DATA_GO_KR_KEY"], "strtYymm": month, "endYymm": month})
     root = ET.fromstring(urllib.request.urlopen(f"{CUSTOMS_URL}?{query}", timeout=120).read())
     if root.findtext(".//resultCode") != "00":
@@ -622,8 +629,18 @@ def _customs_month(month):
     total = next((v for code, v in rows if code in ("-", "")), None)
     if not total:
         return None
-    cfg = CFG["exports"]
-    groups = {"semis": cfg["semis_hs"], **{item["name"]: item["hs"] for item in cfg["items"]}}
+    return rows
+
+
+def _customs_month(month, groups=None):
+    """한 달 전체 품목 수출(달러): 총계 + HS 묶음별 합계. 아직 발표 전이면 None."""
+    rows = _customs_rows(month)
+    if rows is None:
+        return None
+    total = next(v for code, v in rows if code in ("-", ""))
+    if groups is None:
+        cfg = CFG["exports"]
+        groups = {"semis": cfg["semis_hs"], **{item["name"]: item["hs"] for item in cfg["items"]}}
     out = {"total": total}
     for name, prefixes in groups.items():
         out[name] = sum(v for code, v in rows if code[:1].isdigit() and code.startswith(tuple(prefixes)))
@@ -654,6 +671,42 @@ def customs_exports():
     if data.empty:
         raise ValueError("관세청 수출 데이터가 비어 있습니다")
     return data
+
+
+def motir_flash():
+    """산업통상부 월간 수출입 동향(매월 1일 잠정치). 관세청 품목별 자료보다 2주가량 빠르다."""
+    cache = OUT / ".motir_exports.json"
+    saved = json.loads(cache.read_text(encoding="utf-8")) if cache.exists() else None
+
+    def page(path):
+        req = urllib.request.Request(MOTIR_URL + path, headers={"User-Agent": "Mozilla/5.0"})
+        return urllib.request.urlopen(req, timeout=30).read().decode("utf-8", "replace")
+
+    def plain(html_text):
+        s = re.sub(r"<(script|style)[\s\S]*?</\1>", " ", html_text)
+        return re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", " ", s)))
+
+    try:
+        found = re.search(r'/kor/article/ATCL3f49a5a8c/(\d+)/view[^>]*>\s*<i>(\d{4})년 (\d{1,2})월 수출입 동향</i>', page(MOTIR_LIST))
+        if not found:
+            raise ValueError("목록에서 수출입 동향을 찾지 못했습니다")
+        article, year, month = found.group(1), int(found.group(2)), int(found.group(3))
+        body = plain(page(f"/kor/article/ATCL3f49a5a8c/{article}/view"))
+        total = re.search(r"수출은 전년 동월 대비 ([\d.]+)% (증가|감소)한 ([\d,.]+) ?억 달러", body)
+        semis = re.search(r"반도체 수출 \(([\d,.]+) ?억 달러 ?, ?([+△-]) ?([\d.]+)%?\)", body)
+        posted = re.search(r"등록일 (\d{4}-\d{2}-\d{2})", body)
+        if not (total and semis and posted):
+            raise ValueError("보도자료 문구가 달라 수치를 읽지 못했습니다")
+        out = {"month": f"{year}-{month:02d}", "posted": posted.group(1),
+               "total": float(total.group(3).replace(",", "")),
+               "total_y1": float(total.group(1)) * (1 if total.group(2) == "증가" else -1),
+               "semis": float(semis.group(1).replace(",", "")),
+               "semis_y1": float(semis.group(3)) * (1 if semis.group(2) == "+" else -1)}
+        cache.write_text(json.dumps(out, ensure_ascii=False), encoding="utf-8")
+        return out
+    except Exception as e:
+        print(f"  ! 산업부 수출입 동향: {e.__class__.__name__} {e}")
+        return saved
 
 
 @lru_cache(maxsize=None)
@@ -971,7 +1024,7 @@ h1{font-size:17px;margin:0 0 4px}
 .jump{margin:-4px 0 8px;color:var(--mu);font-size:12px}.jump a{display:inline-block;margin:2px 4px;padding:3px 10px;border:1px solid var(--line);border-radius:12px;color:var(--tx);text-decoration:none}.jump a:hover{border-color:var(--accent);color:var(--accent)}
 .chead{font-size:18px;font-weight:700;margin:2px 0 6px}.chead .cdate{font-size:12px;font-weight:500;color:var(--mu);background:var(--bg);border-radius:5px;padding:2px 8px;margin-right:10px;vertical-align:middle}
 .clegend{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:4px 14px;color:var(--mu);font-size:12px;margin:8px 0 4px}
-.clegend i{display:inline-block;width:14px;height:3px;border-radius:2px;margin-right:5px;vertical-align:middle}.clegend i.sq{width:10px;height:10px;border-radius:2px}
+.clegend i{display:inline-block;width:14px;height:3px;border-radius:2px;margin-right:5px;vertical-align:middle}
 .cpanel{position:relative;border-top:1px solid var(--line);padding-top:4px}.cname{position:absolute;left:4px;top:6px;font-size:12px;color:var(--mu);z-index:2}
 .cchart{width:100%;height:270px}
 .csub{color:var(--text-2);margin:-2px 0 8px}
@@ -1124,20 +1177,21 @@ td.hi{background:var(--bg);border-radius:4px}
 .evd{font-size:11px;font-weight:700;border-radius:6px;padding:1px 6px;background:var(--surface-2);color:var(--text-2)}.evd:empty{display:none}.evd.today{background:rgba(255,173,51,.15);color:var(--accent)}
 .evstars{margin-left:auto;color:var(--accent);letter-spacing:1px;white-space:nowrap}.evstars i{color:var(--mu);font-style:normal}
 .evtitle{font-weight:700;font-size:14px;margin-top:5px}.evsub{display:flex;flex-wrap:wrap;gap:4px 10px;margin-top:5px;color:var(--mu);font-size:11.5px}
-.evreg{font-weight:700}.evreg.us{color:#49a5e8}.evreg.kr{color:#62d59a}.evreg.jp{color:#ff7770}.evreg.co{color:#ffad33}.evreg.mk{color:#c39bff}
-.evrow.past{opacity:.4}
+.evreg{font-weight:700}.evreg.us{color:#49a5e8}.evreg.kr{color:#62d59a}.evreg.jp{color:#ff7770}.evreg.co{color:#ffad33}.evreg.mk{color:#c39bff}.evreg.cn{color:#ff9f7a}.evreg.eu{color:#7fd6d0}
+.evact{color:var(--text)}.evitems{display:flex;flex-wrap:wrap;gap:3px 14px;margin-top:6px;color:var(--text-2);font-size:12px}.evitems b{color:var(--text);font-weight:600}.evwhy{margin-top:6px;color:var(--text-2);font-size:12px;line-height:1.5}
+.evrow.past{opacity:.4}.evday .evrow.past{opacity:.8}
 .cal{margin:10px 0 18px}.calnav{display:flex;align-items:center;justify-content:center;gap:22px;margin-bottom:10px}.calnav b{font-size:18px;min-width:130px;text-align:center}
 .calnav button{background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:8px;width:34px;height:32px;font-size:18px;cursor:pointer}
 .calnav button:disabled{opacity:.3;cursor:default}.calnav button:not(:disabled):hover{border-color:var(--accent);color:var(--accent)}
 .calhead,.calgrid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:6px}.calhead span{text-align:center;color:var(--text-2);font-size:12px;font-weight:700;padding:4px 0}
 .calhead span:first-child{color:#ff7770}.calhead span:last-child{color:#49a5e8}
-.calcell{background:var(--bg);border:1px solid var(--border);border-radius:10px;min-height:96px;padding:7px 8px;min-width:0;cursor:pointer}.calcell:hover{border-color:var(--text-3)}
+.calcell{background:var(--bg);border:1px solid var(--border);border-radius:10px;min-height:112px;padding:7px 8px;min-width:0;cursor:pointer}.calcell:hover{border-color:var(--text-3)}
 .calcell.blank{background:transparent;border:0;cursor:default}.calcell.today{border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent)}
 .calcell .cd{font-weight:700;font-size:13px;margin-bottom:4px;color:var(--text)}.calcell.we .cd{color:#49a5e8}.calcell.sun .cd{color:#ff7770}.calcell.today .cd{color:var(--accent)}
 .calcell .ci{display:flex;align-items:center;gap:5px;font-size:11.5px;color:var(--text-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.55}
 .calcell .ci i{flex-shrink:0;width:6px;height:6px;border-radius:50%}.calcell .ci span{overflow:hidden;text-overflow:ellipsis}
 .calcell .cmore{color:var(--mu);font-size:11px}
-.ci.us i{background:#49a5e8}.ci.kr i{background:#62d59a}.ci.jp i{background:#ff7770}.ci.co i{background:#ffad33}.ci.mk i{background:#c39bff}
+.ci.us i{background:#49a5e8}.ci.kr i{background:#62d59a}.ci.jp i{background:#ff7770}.ci.co i{background:#ffad33}.ci.mk i{background:#c39bff}.ci.cn i{background:#ff9f7a}.ci.eu i{background:#7fd6d0}.ci.s3 span{color:var(--text);font-weight:700}
 .calcell.picked{border-color:var(--text-2);background:var(--surface-2)}
 .evday{background:var(--bg);border:1px solid var(--border);border-radius:14px;padding:6px 16px 4px;margin:-6px 0 14px}
 .evdayhead{font-weight:700;font-size:14px;padding:8px 4px 2px}.evday .evrow:last-child{border-bottom:0}.evday .muted{padding:8px 4px}
@@ -1252,9 +1306,6 @@ def collect_news():
 
 
 CREDIT_WINDOW_YEARS = 2
-CRASH_DAY = -5.0          # 지수 하루 −5% 이하 = 급락일
-CREDIT_DROP_DAY = -3.0    # 신용 하루 −3% 이하 = 신용 급감
-FAST_QUANTILE = 0.15      # 20일 신용 증감률이 2010년 이후 상·하위 15% = 빨리 쌓임/빨리 줄어듦
 
 
 def _extremes(s, half_window=40):
@@ -1271,22 +1322,18 @@ def _extremes(s, half_window=40):
     return keep
 
 
-def _runs(mask):
-    """True가 이어지는 구간들의 (시작, 끝) 날짜."""
-    out, start, prev = [], None, None
-    for d, flag in mask.items():
-        if flag and start is None:
-            start = d
-        if not flag and start is not None:
-            out.append((start, prev))
-            start = None
-        prev = d
-    if start is not None:
-        out.append((start, prev))
-    return out
+def _credit_view(s, unit, decimals):
+    s = s.dropna()
+    if s.empty:
+        return None
+    return {
+        "unit": unit, "decimals": decimals,
+        "line": [[d.strftime("%Y-%m-%d"), round(v, 4)] for d, v in s.items()],
+        "labels": [[d.strftime("%Y-%m-%d"), round(v, 4)] for d, v in _extremes(s)],
+    }
 
 
-def credit_panel(name, credit, index, cap, fast_hi, fast_lo, since):
+def credit_panel(name, credit, index, cap, since):
     """한 시장(코스피/코스닥)의 차트 데이터: 금액(조원)과 시총 대비 비율(%) 두 가지."""
     credit = credit.where(credit > 0)
     if credit.dropna().empty:
@@ -1294,30 +1341,8 @@ def credit_panel(name, credit, index, cap, fast_hi, fast_lo, since):
     df = pd.DataFrame({"credit": credit, "index": index}).dropna(subset=["credit"])
     df["index"] = df["index"].ffill()
     df["ratio"] = (credit / cap * 100).reindex(df.index) if cap is not None else np.nan
-    df["chg20"] = df["credit"].pct_change(20, fill_method=None) * 100
-    idx_ret = index.dropna().pct_change() * 100
     df = df[df.index >= since]
     day = lambda d: d.strftime("%Y-%m-%d")
-
-    crash = [d for d in df.index if idx_ret.get(d, 0) <= CRASH_DAY]
-    credit_ret = df["credit"].pct_change(fill_method=None) * 100
-    drops = [d for d in df.index if credit_ret.get(d, 0) <= CREDIT_DROP_DAY]
-    shade = ([{"from": day(a), "to": day(b), "kind": "up"} for a, b in _runs(df["chg20"] >= fast_hi)] +
-             [{"from": day(a), "to": day(b), "kind": "down"} for a, b in _runs(df["chg20"] <= fast_lo)])
-
-    def view(col, scale, unit, decimals):
-        s = df[col].dropna() / scale
-        if s.empty:
-            return None
-        peak = s.idxmax()
-        return {
-            "unit": unit, "decimals": decimals,
-            "line": [[day(d), round(v, 4)] for d, v in s.items()],
-            "labels": [[day(d), round(v, 4)] for d, v in _extremes(s)],
-            "crash": [[day(d), round(s[d], 4)] for d in crash if d in s.index],
-            "drops": [[day(d), round(s[d], 4)] for d in drops if d in s.index],
-            "peak": [day(peak), round(s[peak], 4)],
-        }
 
     if df.empty:
         raise ValueError(f"{name} 신용 데이터가 비어 있습니다")
@@ -1327,15 +1352,14 @@ def credit_panel(name, credit, index, cap, fast_hi, fast_lo, since):
     ref_d = recent.idxmax() if recent.idxmax() != last_d else recent.idxmin()
     days = len(recent.loc[ref_d:]) - 1
     chg = (last_v / recent[ref_d] - 1) * 100
-    verb = "줄었어요" if chg < 0 else "늘었어요"
-    headline = (f"{name} 신용 {last_v / 1e12:.1f}조, {days}거래일 새 {chg:+.1f}% {verb}"
+    ref, verb = ("고점", "감소했습니다") if chg < 0 else ("저점", "증가했습니다")
+    headline = (f"{name} 신용 {last_v / 1e12:.1f}조, 이전 {ref} 대비 {abs(chg):.1f}% {verb}"
                 if days > 0 else f"{name} 신용 {last_v / 1e12:.1f}조")
     return {
         "name": name, "asof": day(last_d), "headline": headline,
         "index": [[day(d), round(v, 2)] for d, v in df["index"].dropna().items()],
-        "shade": shade,
-        "amount": view("credit", 1e12, "조", 1),
-        "ratio": view("ratio", 1, "%", 2),
+        "amount": _credit_view(df["credit"] / 1e12, "조", 1),
+        "ratio": _credit_view(df["ratio"], "%", 2),
     }
 
 
@@ -1357,11 +1381,17 @@ def credit_charts(px):
     panels = []
     for name, column, index, cap in [("코스피", "TMPV3", px["^KS11"].dropna(), kospi_cap),
                                      ("코스닥", "TMPV4", kosdaq_close, kosdaq_cap)]:
-        chg20 = credit[column].pct_change(20, fill_method=None) * 100
-        hi, lo = chg20.quantile(1 - FAST_QUANTILE), chg20.quantile(FAST_QUANTILE)
-        panels.append(credit_panel(name, credit[column], index, cap, hi, lo, since))
-    return {"panels": panels, "notes": notes,
-            "rules": {"crash": CRASH_DAY, "drop": CREDIT_DROP_DAY, "fast": int(FAST_QUANTILE * 100)}}
+        panels.append(credit_panel(name, credit[column], index, cap, since))
+    return {"panels": panels, "notes": notes}
+
+
+def deposit_panel(calc):
+    since = TODAY - pd.DateOffset(years=CREDIT_WINDOW_YEARS)
+    amount = kofia(calc["table"])[calc["column"]].loc[since:]
+    view = _credit_view(amount[amount > 0] / 1e12, "조", 2)
+    if view is None:
+        raise ValueError("투자자예탁금 데이터가 비어 있습니다")
+    return {"name": "투자자예탁금", "amount": view}
 
 
 ECHARTS_URL = "https://cdnjs.cloudflare.com/ajax/libs/echarts/5.5.0/echarts.min.js"
@@ -1369,45 +1399,40 @@ LWC_URL = "https://cdn.jsdelivr.net/npm/lightweight-charts@4.2.0/dist/lightweigh
 
 CREDIT_JS = r"""
 const CREDIT = __DATA__;
-const COLORS = {코스피: '#49a5e8', 코스닥: '#ffad33', index: '#81939b', crash: '#ff7770', drop: '#edf2f0',
-                up: 'rgba(255,119,112,0.12)', down: 'rgba(98,213,154,0.10)', grid: '#2c2c2c', text: '#81939b'};
+const COLORS = {코스피: '#49a5e8', 코스닥: '#ffad33', 투자자예탁금: '#62d59a', index: '#81939b', grid: '#2c2c2c', text: '#81939b'};
 function fmt(v, view) { return view.decimals === 1 ? v.toFixed(1) + view.unit : v.toFixed(2) + view.unit; }
 function creditOption(panel, kind) {
   const view = panel[kind], color = COLORS[panel.name];
-  const vals = view.line.map(p => p[1]), lo = Math.min(...vals), hi = Math.max(...vals), pad = (hi - lo) * 0.12;
-  const last = view.line[view.line.length - 1], lastIdx = panel.index.length ? panel.index[panel.index.length - 1] : null;
+  const vals = view.line.map(p => p[1]), lo = Math.min(...vals), hi = Math.max(...vals);
+  const pad = Math.max((hi - lo) * 0.12, 10 ** -view.decimals);
+  const index = panel.index ?? [], lastIdx = index.at(-1), last = view.line.at(-1);
+  const indexName = panel.name + ' 지수', seriesName = panel.index ? panel.name + ' 신용' : panel.name;
   return {
     animation: false, backgroundColor: 'transparent',
-    grid: {left: 12, right: 176, top: 14, bottom: 26},
+    grid: {left: 12, right: panel.index ? 176 : 84, top: 14, bottom: 26},
     tooltip: {trigger: 'axis', backgroundColor: '#262626', borderColor: '#353535', textStyle: {color: '#edf2f0', fontSize: 12},
-      formatter: ps => ps[0].axisValue + '<br>' + ps.filter(p => p.seriesName.indexOf('지수') >= 0 || p.seriesName.indexOf('신용') >= 0)
-        .map(p => p.marker + p.seriesName + ' <b>' + (p.seriesName.indexOf('지수') >= 0 ? p.value[1].toLocaleString() : fmt(p.value[1], view)) + '</b>').join('<br>')},
+      formatter: ps => ps[0].axisValue + '<br>' + ps.filter(p => p.seriesName === indexName || p.seriesName === seriesName)
+        .map(p => p.marker + p.seriesName + ' <b>' + (p.seriesName === indexName ? p.value[1].toLocaleString() : fmt(p.value[1], view)) + '</b>').join('<br>')},
     xAxis: {type: 'time', axisLine: {lineStyle: {color: '#353535'}}, axisLabel: {color: COLORS.text, fontSize: 11,
       formatter: {year: '{yyyy}년', month: '{M}월', day: '{M}/{d}'}}, splitLine: {show: false}},
     yAxis: [
       {type: 'value', position: 'right', min: +(lo - pad).toFixed(4), max: +(hi + pad).toFixed(4), splitLine: {lineStyle: {color: COLORS.grid}},
        axisLabel: {color: COLORS.text, fontSize: 10, formatter: v => fmt(v, view)}},
-      {type: 'value', position: 'right', offset: 56, scale: true, splitLine: {show: false},
+      {type: 'value', show: !!panel.index, position: 'right', offset: 56, scale: true, splitLine: {show: false},
        axisLabel: {color: COLORS.index, fontSize: 10, formatter: v => Math.round(v).toLocaleString()}},
     ],
     series: [
-      {name: panel.name + ' 지수', type: 'line', yAxisIndex: 1, data: panel.index, showSymbol: false, z: 1,
+      {name: indexName, type: 'line', yAxisIndex: 1, data: index, showSymbol: false, z: 1,
        lineStyle: {color: COLORS.index, width: 1.2, opacity: 0.6},
        markPoint: {symbol: 'roundRect', symbolSize: [52, 18], symbolOffset: [146, 0], data: lastIdx ? [{coord: lastIdx, value: Math.round(lastIdx[1]).toLocaleString()}] : [],
          itemStyle: {color: COLORS.index}, label: {color: '#091018', fontSize: 11, fontWeight: 'bold'}}},
-      {name: panel.name + ' 신용', type: 'line', data: view.line, showSymbol: false, z: 3, lineStyle: {color: color, width: 2},
-       markArea: {silent: true, data: panel.shade.map(s => [{xAxis: s.from, itemStyle: {color: s.kind === 'up' ? COLORS.up : COLORS.down}}, {xAxis: s.to}])},
+      {name: seriesName, type: 'line', data: view.line, showSymbol: false, z: 3, lineStyle: {color: color, width: 2},
        markPoint: {data: [
          ...view.labels.map(p => ({coord: p, value: fmt(p[1], view), symbol: 'circle', symbolSize: 1,
            label: {show: true, color: color, fontWeight: 'bold', fontSize: 11, position: 'top', distance: 6}})),
-         {coord: view.peak, symbol: 'circle', symbolSize: 18, itemStyle: {color: 'transparent', borderColor: color, borderWidth: 2},
-          label: {show: false}},
-         {coord: last, value: fmt(last[1], view), symbol: 'roundRect', symbolSize: [50, 18], symbolOffset: [30, 0],
+         {coord: last, value: fmt(last[1], view), symbol: 'roundRect', symbolSize: [panel.index ? 50 : 58, 18], symbolOffset: [30, 0],
           itemStyle: {color: color}, label: {show: true, color: '#091018', fontWeight: 'bold', fontSize: 11}},
        ]}},
-      {name: '급락일', type: 'scatter', data: view.crash, symbol: 'diamond', symbolSize: 10, z: 5, itemStyle: {color: COLORS.crash, borderColor: '#050505', borderWidth: 1}},
-      {name: '신용 급감', type: 'scatter', data: view.drops, symbol: 'triangle', symbolRotate: 180, symbolSize: 9, symbolOffset: [0, 10], z: 5,
-       itemStyle: {color: COLORS.drop}},
     ],
   };
 }
@@ -1417,47 +1442,47 @@ function drawCredit() {
   if (typeof echarts === 'undefined') { chartUnavailable('t4'); return; }
   document.querySelectorAll('[data-credit]').forEach(el => {
     const [i, kind] = el.dataset.credit.split(':');
-    const panel = CREDIT.panels[+i];
+    const panel = i === 'deposit' ? CREDIT.deposit : CREDIT.panels[+i];
     if (!panel[kind]) return;
     const chart = echarts.init(el, null, {renderer: 'canvas'});
     chart.setOption(creditOption(panel, kind));
-    chart.group = 'credit-' + kind;
+    if (i !== 'deposit') chart.group = 'credit-' + kind;
     creditCharts.push(chart);
   });
-  echarts.connect('credit-amount'); echarts.connect('credit-ratio');
+  echarts.connect('credit-amount');
 }
 window.addEventListener('resize', () => creditCharts.forEach(c => c.resize()));
 """
 
 
 def render_credit(data):
-    """신용잔고 탭: 머리말 + 금액 차트 2개 + 시가총액 대비 비율 차트 2개."""
-    if data is None:
-        return '<p class="note">신용잔고 데이터를 받지 못했습니다.</p>'
-    r = data["rules"]
+    """신용잔고와 투자자예탁금 차트를 표시한다."""
     legend = (
         '<div class="clegend"><span><i style="background:#49a5e8"></i>코스피 신용</span>'
-        '<span><i style="background:#ffad33"></i>코스닥 신용</span><span><i style="background:#81939b"></i>지수</span>'
-        f'<span><b style="color:#ff7770">◆</b> 급락일 (지수 {r["crash"]:.0f}%↓)</span>'
-        f'<span><b style="color:#edf2f0">▼</b> 신용 급감 ({r["drop"]:.0f}%↓)</span><span>◯ 신용 꼭지점</span>'
-        f'<span><i class="sq" style="background:rgba(255,119,112,.5)"></i>빨리 쌓임</span>'
-        f'<span><i class="sq" style="background:rgba(98,213,154,.45)"></i>빨리 줄어듦</span></div>')
+        '<span><i style="background:#ffad33"></i>코스닥 신용</span><span><i style="background:#81939b"></i>지수</span></div>')
     heads = "".join(
         f'<div class="chead"><span class="cdate">{p["asof"][5:].replace("-", ".")}</span>{esc(p["headline"])}</div>'
         for p in data["panels"])
     notes = "".join(f'<p class="note">{esc(n)}</p>' for n in data["notes"])
 
-    def block(kind):
+    def block():
         return "".join(
-            f'<div class="cpanel"><div class="cname">{esc(p["name"])}</div><div class="cchart" data-credit="{i}:{kind}"></div></div>'
-            if p[kind] else f'<p class="note">{esc(p["name"])} 시가총액 데이터가 없어 비율을 그리지 못했습니다.</p>'
+            f'<div class="cpanel"><div class="cname">{esc(p["name"])}</div><div class="cchart" data-credit="{i}:amount"></div></div>'
             for i, p in enumerate(data["panels"]))
 
-    return (f'{notes}<div class="card">{heads}{legend}{block("amount")}</div>'
-            f'<div class="card"><div class="sec-head"><span class="sec-title">시가총액 대비 비율</span>'
-            f'<span>신용거래융자 ÷ 상장 시가총액 · 시장이 커지면 금액은 저절로 늘어나므로 비율로 본 부담</span></div>{legend}{block("ratio")}'
-            f'<div class="legend">※ 빨리 쌓임/줄어듦: 20거래일 신용 증감률이 2010년 이후 상·하위 {r["fast"]}%인 구간 · '
-            f'출처: 금융투자협회(신용), 한국은행 ECOS(코스피 시총), KRX(코스닥 시총·지수)</div></div>')
+    credit_html = ""
+    if data["panels"]:
+        credit_html = f'<div class="card">{heads}{legend}{block()}</div>'
+    deposit = data["deposit"]
+    if deposit is None:
+        deposit_html = '<p class="note">투자자예탁금 데이터를 받지 못했습니다.</p>'
+    else:
+        asof, amount = deposit["amount"]["line"][-1]
+        deposit_html = (
+            f'<div class="card"><div class="chead"><span class="cdate">{asof}</span>투자자예탁금 {amount:,.2f}조 원</div>'
+            f'<div class="cpanel"><div class="cchart" data-credit="deposit:amount"></div></div>'
+            f'<div class="legend">※ 출처: 금융투자협회 · 최근 {CREDIT_WINDOW_YEARS}년 일별 잔고</div></div>')
+    return notes + credit_html + deposit_html
 
 
 STOCK_JS = r"""
@@ -1963,7 +1988,8 @@ window.addEventListener('resize', () => exportChart && exportChart.resize());
 
 def export_data():
     """수출 탭 데이터 (억 달러)."""
-    df = customs_exports() / 1e8
+    raw = customs_exports()
+    df = raw / 1e8
     df = df.tail(EXPORT_MONTHS + 12)  # 전년 대비 계산용 12개월 여유
     last = df.index[-1]
     year_ago = str(pd.Period(last, "M") - 12)
@@ -1979,6 +2005,19 @@ def export_data():
                       "m1": change(name, month_ago), "m3": change(name, three_ago), "y1": change(name, year_ago),
                       "bars": [round(v, 2) for v in view[name]]})
     items.sort(key=lambda i: -(i["y1"] if i["y1"] is not None else -1e9))
+    first = (pd.Period(last, "M") - 47).asfreq("Q").asfreq("M", "start")
+    product_months = pd.period_range(first, last, freq="M").astype(str)
+    product_values = raw.reindex(product_months)
+    products = {
+        "months": list(product_months), "asof": last, "updated": TODAY.strftime("%Y-%m-%d"),
+        "notes": ["일부 월 자료가 없어 해당 구간과 전년 비교를 빈 값으로 표시합니다."]
+                 if product_values[[item["name"] for item in items]].isna().any(axis=None) else [],
+        "items": [
+            {"id": "hs-" + "-".join(item["hs"]), "name": item["name"], "hs": item["hs"],
+             "values": [None if pd.isna(v) else float(v) for v in product_values[item["name"]]]}
+            for item in items
+        ],
+    }
     return {
         "month": last, "months": list(view.index),
         "total": [round(v, 1) for v in view["total"]],
@@ -1988,7 +2027,7 @@ def export_data():
         "total_last": df.at[last, "total"], "total_y1": change("total", year_ago), "total_m1": change("total", month_ago),
         "semis_last": df.at[last, "semis"], "semis_y1": change("semis", year_ago), "semis_m1": change("semis", month_ago),
         "share_last": df.at[last, "semis"] / df.at[last, "total"] * 100,
-        "items": items,
+        "items": items, "products": products, "flash": motir_flash(),
     }
 
 
@@ -2006,27 +2045,22 @@ def render_exports(data, note=None):
             f'<b style="color:{tone(data["semis_y1"])}">{pct(data["semis_y1"])}</b> · 전월 대비 '
             f'<b style="color:{tone(data["semis_m1"])}">{pct(data["semis_m1"])}</b> · 전체 수출의 {data["share_last"]:.0f}%</div>')
 
-    grown = [i for i in data["items"] if i["y1"] is not None and round(i["y1"]) > 0]
-    top = data["items"][0] if data["items"] else {"name": "비교 가능한 품목 없음", "y1": None}
-    item_head = (f'<div class="chead">{len(data["items"])}개 품목 중 {len(grown)}개가 1년 전보다 늘었고, '
-                 f'증가율 1위: {esc(top["name"])} ({pct(top["y1"])})</div>')
-    cards = ""
-    for item in data["items"]:
-        peak = max(item["bars"]) or 1
-        bars = "".join(f'<i style="height:{max(v / peak * 100, 1.5):.1f}%"></i>' for v in item["bars"])
-        value = f'{item["value"]:,.1f}' if item["value"] < 100 else f'{item["value"]:,.0f}'
-        cards += (f'<div class="xcard"><div class="xname">{esc(item["name"])} <small>HS {", ".join(item["hs"])}</small></div>'
-                  f'<div class="xval">{value}<small> 억 달러</small></div>'
-                  f'<div class="xchg"><span>전월<b style="color:{tone(item["m1"])}">{pct(item["m1"])}</b></span>'
-                  f'<span>3개월 전<b style="color:{tone(item["m3"])}">{pct(item["m3"])}</b></span>'
-                  f'<span>1년 전<b style="color:{tone(item["y1"])}">{pct(item["y1"])}</b></span></div>'
-                  f'<div class="xbars">{bars}</div>'
-                  f'<div class="xaxis"><span>{data["months"][0].replace("-", ".")}</span><span>{data["month"].replace("-", ".")}</span></div></div>')
-    return (f'<div class="card">{head}<div id="export-chart" class="xchart"></div>'
+    flash, flash_card = data["flash"], ""
+    if flash and flash["month"] > data["month"]:
+        fm = int(flash["month"][5:])
+        flash_card = (f'<div class="card"><div class="chead"><span class="cdate">{flash["month"].replace("-", ".")}</span>'
+                      f'{fm}월 수출 {flash["total"]:,.0f}억 달러 · 1년 전 대비 '
+                      f'<span style="color:{tone(flash["total_y1"])}">{pct(flash["total_y1"])}</span></div>'
+                      f'<div class="csub">반도체 {flash["semis"]:,.0f}억 달러 · 1년 전 대비 '
+                      f'<b style="color:{tone(flash["semis_y1"])}">{pct(flash["semis_y1"])}</b> · '
+                      f'전체 수출의 {flash["semis"] / flash["total"] * 100:.0f}%</div>'
+                      f'<div class="legend">※ 산업통상부 {flash["posted"][5:].replace("-", ".")} 발표 잠정치 · '
+                      f'반도체 범위가 넓어(산업부 분류) 아래 집적회로(HS 8542) 수치와 직접 비교할 수 없습니다 · '
+                      f'품목별 자료는 매월 15일경 나오면 아래에 반영됩니다</div></div>')
+    return (f'{flash_card}<div class="card">{head}<div id="export-chart" class="xchart"></div>'
             f'<div class="legend">※ 관세청 품목별 수출입실적 (공공데이터포털) · FOB 달러 · 매월 15일경 전월분 발표 · '
             f'반도체 = 집적회로(HS 8542) 전체 · SSD는 관세청 분류상 저장매체(HS 8523)라 아래 품목에서 따로 봅니다</div></div>'
-            f'<div class="card">{item_head}<div class="csub">{month}월 수출 · 막대 = 최근 {len(data["months"])}개월 · 1년 전 대비 증가율 순</div>'
-            f'<div class="xgrid">{cards}</div></div>')
+            + cosmetics.render(data["products"], namespace="semiconductors", title="반도체 품목별 수출"))
 
 
 def _kst(iso):
@@ -2116,26 +2150,36 @@ def render_events(ev):
             rows += f'<h3 class="evmonth">{at.year}년 {at.month}월</h3>'
         day, clock = _ev_when(e)
         stars = "★" * e["stars"] + f'<i>{"☆" * (3 - e["stars"])}</i>'
-        extra = [x for x in [f'직전 {e["prev"]}' if e["prev"] else None, f'예상 {e["expected"]}' if e["expected"] else None,
+        unit = e.get("unit") or ""
+        result = f'<b class="evact">결과 {esc(e["actual"])}{esc(unit)}</b>' if e.get("actual") else ""
+        extra = [x for x in [f'직전 {e["prev"]}{unit}' if e["prev"] else None, f'예상 {e["expected"]}{unit}' if e["expected"] else None,
                              e["note"]] if x]
+        parts = ""
+        for x in e.get("items", []):
+            shown = f'<b>{esc(x["actual"])}{esc(x["unit"])}</b>' if x["actual"] else ""
+            before = f'직전 {esc(x["prev"])}{esc(x["unit"])}' if x["prev"] else ""
+            if shown or before:
+                parts += f'<span>{esc(x["label"])} {shown}{f" ({before})" if shown and before else before}</span>'
+        why = f'<div class="evwhy">{esc(e["why"])}</div>' if e.get("why") else ""
         rows += (f'<a class="evrow" href="{esc(e["url"])}" target="_blank" rel="noopener noreferrer" data-r="{e["region"]}" '
                  f'data-s="{e["stars"]}" data-at="{e["at"]}" data-known="{int(e["time_known"])}">'
                  f'<div class="evtop"><span class="evtime">{day} <b>{clock}</b></span><span class="evd"></span>'
                  f'<span class="evstars" aria-label="중요도 {e["stars"]}/3">{stars}</span></div>'
                  f'<div class="evtitle">{esc(e["title"])}</div>'
                  f'<div class="evsub"><span class="evreg {e["region"]}">{events.REGIONS[e["region"]]}</span>'
-                 f'{"".join(f"<span>{esc(x)}</span>" for x in extra)}</div></a>')
-    return (f'{notes}<div class="card"><div class="fhead"><span class="sec-title">다가오는 일정</span>'
-            f'<span>한국 시각 (UTC+9) · 앞으로 {ev["horizon"]}일 · 받은 시각 {ev["today"]}</span></div>'
+                 f'{result}{"".join(f"<span>{esc(x)}</span>" for x in extra)}</div>'
+                 f'{f"<div class=evitems>{parts}</div>" if parts else ""}{why}</a>')
+    return (f'{notes}<div class="card"><div class="fhead"><span class="sec-title">일정</span>'
+            f'<span>한국 시각 (UTC+9) · 이달 1일부터 앞으로 {ev["horizon"]}일까지 · 받은 시각 {ev["today"]}</span></div>'
             f'<div class="evtools"><div class="evfilter">{buttons}</div>'
             f'<label class="evonly"><input type="checkbox" id="ev3"> ★★★만</label></div>'
             f'<div class="cal"><div class="calnav"><button id="calprev" aria-label="이전 달">‹</button><b id="calttl"></b>'
             f'<button id="calnext" aria-label="다음 달">›</button></div>'
             f'<div class="calhead">{"".join(f"<span>{d}</span>" for d in "일월화수목금토")}</div><div class="calgrid" id="calgrid"></div></div>'
             f'<div class="evday" id="evday" hidden></div><div class="evlist" hidden>{rows}</div>'
-            f'<div class="legend">★★★ 시장을 크게 움직이는 일정 · ★★ 중요 · ★ 참고 · 날짜를 누르면 그날 일정(시각·직전 값)이 달력 아래에 나오고, 일정을 누르면 출처가 열립니다 · '
-            f'출처: Yahoo 경제 일정표(지표 시각·직전 값) · 연준·한국은행·일본은행 공식 일정 · Yahoo 실적 예정일 · '
-            f'옵션 만기·관세청 수출·보고서 기한은 규칙으로 계산 (공휴일은 반영하지 않고 주말만 다음 평일로)</div></div>')
+            f'<div class="legend">★★★ 시장을 크게 움직이는 일정 · ★★ 중요 · ★ 참고 · 날짜를 누르면 그날 일정이 달력 아래에 나오고, 일정을 누르면 출처가 열립니다 · '
+            f'출처: Yahoo 경제 일정표(지표 시각·결과·직전 값, 약 4주 앞까지) · 연준·한국은행·일본은행 공식 일정 · Yahoo 실적 예정일·추정치 · '
+            f'옵션 만기·지수 변경·관세청 수출·보고서 기한은 규칙으로 계산 · 삼성전자 잠정실적과 TSMC 월매출은 날짜 추정 · 휴장일 표는 해마다 갱신 필요</div></div>')
 
 
 def render_upcoming(ev, days=7, limit=5):
@@ -2143,7 +2187,7 @@ def render_upcoming(ev, days=7, limit=5):
     if not ev:
         return ""
     today = datetime.fromisoformat(ev["today"] + "T00:00:00+09:00")
-    items = [e for e in ev["events"] if e["stars"] >= 2 and datetime.fromisoformat(e["at"]) < today + pd.Timedelta(days=days)][:limit]
+    items = [e for e in ev["events"] if e["stars"] >= 2 and today <= datetime.fromisoformat(e["at"]) < today + pd.Timedelta(days=days)][:limit]
     if not items:
         return ""
     parts = []
@@ -2175,11 +2219,11 @@ def render_html(ctx):
                      f'<small>{g["labels"]["pos"]} {c["pos"]} · 중립 {c["neu"]} · {g["labels"]["neg"]} {c["neg"]}</small></div>{rows}')
 
     return f"""<!doctype html><html lang="ko"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><title>국장 매크로 대시보드</title><style>{CSS}</style></head>
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>국장 매크로 대시보드</title><style>{CSS}{cosmetics.CSS}</style></head>
 <body><div class="wrap">
 <h1>국장 매크로 대시보드</h1>
 <div class="meta">데이터 기준 {ctx["asof"]:%Y-%m-%d} · 생성 {ctx["generated"]:%Y-%m-%d %H:%M} · 판정 기준: indicators.json</div>
-<div class="tabs"><button class="on" data-t="t1">매크로</button>{"".join(f'<button data-t="s-{c["id"]}">{esc(c["tab"])}</button>' for c in ctx["companies"])}<button data-t="t3">삼전닉스 뉴스</button><button data-t="t6">증권사 리포트</button><button data-t="t7">일정</button><button data-t="t4">신용잔고</button><button data-t="t5">수출</button><button data-t="t2">시장 흐름</button></div>
+<div class="tabs"><button class="on" data-t="t1">매크로</button>{"".join(f'<button data-t="s-{c["id"]}">{esc(c["tab"])}</button>' for c in ctx["companies"])}<button data-t="t3">삼전닉스 뉴스</button><button data-t="t6">증권사 리포트</button><button data-t="t7">일정</button><button data-t="t4">신용잔고</button><button data-t="t5">수출</button><button data-t="cosmetics">화장품 수출</button><button data-t="t2">시장 흐름</button></div>
 
 <div class="tab on" id="t1">
 <div class="card status">
@@ -2222,6 +2266,10 @@ def render_html(ctx):
 {ctx["export_html"]}
 </div>
 
+<div class="tab" id="cosmetics">
+{ctx["cosmetics_html"]}
+</div>
+
 <div class="tab" id="t2">
 <div class="card">
   <div class="sec-head"><span class="sec-title">기간별 수익률</span><span>각 자산의 최신 거래일 기준</span></div>
@@ -2239,6 +2287,8 @@ def render_html(ctx):
 <script src="{LWC_URL}"></script>
 <script>{ctx["credit_js"]}</script>
 <script>{ctx["export_js"]}</script>
+<script>{ctx["semiconductor_js"]}</script>
+<script>{ctx["cosmetics_js"]}</script>
 <script>{ctx["stock_js"]}</script>
 <script>
 function chartUnavailable(id) {{
@@ -2253,6 +2303,8 @@ document.querySelectorAll('.tabs button').forEach(b=>b.onclick=()=>{{
   b.classList.add('on');document.getElementById(b.dataset.t).classList.add('on');
   if (b.dataset.t === 't4' && typeof drawCredit === 'function') {{ drawCredit(); creditCharts.forEach(c => c.resize()); }}
   if (b.dataset.t === 't5' && typeof drawExports === 'function') {{ drawExports(); exportChart && exportChart.resize(); }}
+  if (b.dataset.t === 't5' && typeof drawSemiconductors === 'function') {{ drawSemiconductors(); }}
+  if (b.dataset.t === 'cosmetics' && typeof drawCosmetics === 'function') {{ drawCosmetics(); }}
   if (b.dataset.t.startsWith('s-') && typeof drawStock === 'function') {{
     const id = b.dataset.t.slice(2);
     drawStock(id);
@@ -2291,8 +2343,8 @@ document.querySelectorAll('.tabs button').forEach(b=>b.onclick=()=>{{
     for (let d = 1; d <= n; d++) {{
       const day = calMonth + '-' + String(d).padStart(2, '0'), wd = (first.getDay() + d - 1) % 7;
       const evs = items.filter(e => e.day === day && match(e)).sort((a, b) => b.s - a.s);
-      const list = evs.slice(0, 3).map(e => '<div class="ci ' + e.r + '"><i></i><span>' + esc(e.title) + '</span></div>').join('');
-      const more = evs.length > 3 ? '<div class="cmore">+' + (evs.length - 3) + '</div>' : '';
+      const list = evs.slice(0, 4).map(e => '<div class="ci ' + e.r + (e.s === 3 ? ' s3' : '') + '"><i></i><span>' + esc(e.title) + '</span></div>').join('');
+      const more = evs.length > 4 ? '<div class="cmore">+' + (evs.length - 4) + '</div>' : '';
       html += '<div class="calcell' + (wd === 0 ? ' we sun' : wd === 6 ? ' we' : '') + (day === today ? ' today' : '') + '" data-day="' + day + '" title="'
         + esc(evs.map(e => e.title).join(' · ')) + '"><div class="cd">' + d + '</div>' + list + more + '</div>';
     }}
@@ -2334,6 +2386,7 @@ document.querySelectorAll('.tabs button').forEach(b=>b.onclick=()=>{{
     region = b.dataset.r; document.querySelectorAll('.evfilter button').forEach(e => e.classList.toggle('on', e === b)); apply();
   }});
   document.getElementById('ev3').onchange = apply;
+  picked = today;  // 처음 열면 오늘 일정을 달력 아래에 펼쳐 둔다
   apply();
 }})();
 (function () {{
@@ -2456,11 +2509,24 @@ def main():
     except Exception as e:
         export_note = f"수출 데이터를 받지 못했습니다 ({e.__class__.__name__})"
         print(f"  ! 수출 탭: {e.__class__.__name__}")
+    cosmetics_data, cosmetics_note = None, None
+    try:
+        if not ENV.get("DATA_GO_KR_KEY"):
+            raise MissingKey("공공데이터포털 키가 .env에 없습니다 (DATA_GO_KR_KEY).")
+        cosmetics_data = cosmetics.collect(OUT, TODAY, CFG["cosmetics_exports"], _customs_month)
+    except Exception as e:
+        cosmetics_note = f"화장품 수출 자료를 받지 못했습니다 ({e.__class__.__name__})."
+        print(f"  ! 화장품 수출: {e.__class__.__name__}")
     try:
         credit = credit_charts(px)
     except Exception as e:  # 신용잔고 탭이 실패해도 나머지 대시보드는 만든다
-        credit = None
+        credit = {"panels": [], "notes": ["신용잔고 데이터를 받지 못했습니다."]}
         print(f"  ! 신용잔고 탭: {e.__class__.__name__}")
+    try:
+        credit["deposit"] = deposit_panel(next(i["calc"] for i in inds if i["id"] == "deposit"))
+    except Exception as e:
+        credit["deposit"] = None
+        print(f"  ! 투자자예탁금: {e.__class__.__name__}")
     ctx = {
         "rows": rows, "verdicts": verdicts, "sentence": summary_sentence(verdicts),
         "kpis": " · ".join(kp) + (f'<div class="flow">수급·자금 · {" · ".join(flow)}</div>' if flow else ""), "fresh": fresh, "asof": kospi.index[-1], "generated": datetime.now(ZoneInfo(KST)),
@@ -2470,10 +2536,13 @@ def main():
         "events_html": render_events(ev), "upcoming_html": render_upcoming(ev),
         "credit_html": render_credit(credit),
         "export_html": render_exports(exports, export_note),
+        "semiconductor_js": cosmetics.script(exports["products"], namespace="semiconductors") if exports else "",
+        "cosmetics_html": cosmetics.render(cosmetics_data, cosmetics_note),
+        "cosmetics_js": cosmetics.script(cosmetics_data),
         "companies": companies,
         "stock_js": STOCK_JS.replace("__DATA__", json.dumps(companies, ensure_ascii=False, allow_nan=False).replace("</", r"<\/")) if companies else "",
         "export_js": EXPORT_JS.replace("__DATA__", json.dumps(exports, ensure_ascii=False, default=float, allow_nan=False).replace("</", r"<\/")) if exports else "",
-        "credit_js": CREDIT_JS.replace("__DATA__", json.dumps(credit, ensure_ascii=False, allow_nan=False).replace("</", r"<\/")) if credit else "",
+        "credit_js": CREDIT_JS.replace("__DATA__", json.dumps(credit, ensure_ascii=False, allow_nan=False).replace("</", r"<\/")),
     }
     target = OUT / "dashboard.html"
     temporary = OUT / f".dashboard-{os.getpid()}.tmp"

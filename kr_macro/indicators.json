@@ -252,7 +252,9 @@
     {"id": "samsung", "tab": "삼성전자", "name": "삼성전자", "eng": "Samsung Electronics",
      "ticker": "005930", "yahoo": "005930.KS", "dart": "00126380", "market": "KOSPI", "sector": "전기·전자"},
     {"id": "hynix", "tab": "하이닉스", "name": "SK하이닉스", "eng": "SK hynix",
-     "ticker": "000660", "yahoo": "000660.KS", "dart": "00164779", "market": "KOSPI", "sector": "전기·전자"}
+     "ticker": "000660", "yahoo": "000660.KS", "dart": "00164779", "market": "KOSPI", "sector": "전기·전자"},
+    {"id": "apr", "tab": "에이피알", "name": "에이피알", "eng": "APR",
+     "ticker": "278470", "yahoo": "278470.KS", "dart": "01190568", "market": "KOSPI", "sector": "화학"}
   ],
 
   "exports": {
@@ -268,6 +270,22 @@
       {"name": "메모리 MCO", "hs": ["8542324000"]},
       {"name": "기타 집적회로", "hs": ["854239"]},
       {"name": "반도체 장비", "hs": ["8486"]}
+    ]
+  },
+
+  "cosmetics_exports": {
+    "items": [
+      {"id": "toxin", "name": "톡신", "hs": ["3002491000"], "scope": "독소·톡소이드·크립토독소·항독소 분류 전체"},
+      {"id": "implants", "name": "임플란트", "hs": ["9021290000"], "scope": "임플란트 등이 포함된 기타 치과용 장착물 분류 전체"},
+      {"id": "aesthetics", "name": "미용기기", "hs": ["901890"], "scope": "미용 의료기기를 포함한 기타 의료용 기기 분류 전체 · 부분품·부속품 포함"},
+      {"id": "fillers", "name": "필러", "hs": ["3304999000"], "scope": "필러 등이 포함된 기타 화장품 분류 전체"},
+      {"id": "homebeauty", "name": "홈뷰티", "hs": ["8543702020"], "scope": "전기식 미용기기 분류 전체"},
+      {"id": "hemostats", "name": "지혈제", "hs": ["3006104000"], "scope": "살균한 외과용·치과용 흡수성 지혈제"},
+      {"id": "dentalimaging", "name": "치과영상장비", "hs": ["9022130000"], "scope": "치과용 엑스선 기기 분류"},
+      {"id": "contacts", "name": "콘택트렌즈", "hs": ["9001300000"], "scope": "콘택트렌즈"},
+      {"id": "skincare", "name": "기초화장품", "hs": ["3304991000"], "scope": "기초화장용 제품류"},
+      {"id": "makeup", "name": "색조", "hs": ["3304992000"], "scope": "메이크업용 제품류 분류"},
+      {"id": "masks", "name": "마스크팩", "hs": ["3307904000"], "scope": "마스크팩"}
     ]
   },
 
