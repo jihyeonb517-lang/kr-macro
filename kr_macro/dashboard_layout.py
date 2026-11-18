@@ -43,7 +43,7 @@ def toolbar_icon(name):
 def navigation(companies):
     groups = [
         ("market", "시장·매크로", [
-            ("t1", "시장 개요", "주요 매크로 지표와 시장 상태"),
+            ("t1", "장세 판단", "주요 매크로 지표와 시장 상태"),
             ("t2", "시장 흐름", "자산별 수익률과 섹터 흐름"),
         ]),
         ("funding", "수급·자금", [
@@ -113,7 +113,7 @@ HEADER = """
 <div class="workspace-masthead">
   <div class="workspace-heading">
     <div class="workspace-section" id="workspace-section">시장·매크로</div>
-    <h1 id="workspace-title">시장 개요</h1>
+    <h1 id="workspace-title">장세 판단</h1>
   </div>
 </div>
 """
