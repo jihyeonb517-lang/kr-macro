@@ -322,7 +322,7 @@ def earnings(start, today):
         ticker = yf.Ticker(code)
         zone = EASTERN if us else KST
         made = dict(kind=f"earn_{code}", title=title, region="co", stars=stars,
-                    url=f"https://finance.yahoo.com/quote/{code}", time_known=False, why=why)
+                    url=f"https://finance.yahoo.com/quote/{code}", why=why)
         clock = time(16, 0) if us else time(9, 0)
         cal = ticker.calendar or {}
         for d in [d for d in (cal.get("Earnings Date") or [])[:1] if d >= today]:  # 지난 실적은 아래 실제 발표일로 넣는다
@@ -330,8 +330,8 @@ def earnings(start, today):
             sales = _money(cal.get("Revenue Average"), cur)
             if sales:
                 items.append({"label": "매출 추정", "unit": "", "actual": sales, "prev": None})
-            out.append(_event(when=datetime.combine(d, clock, tzinfo=zone), items=items,
-                              note="미국 장 마감 후 발표가 일반적 · 날짜는 Yahoo 예정일" if us else "날짜는 Yahoo 예정일", **made))
+            out.append(dict(_event(when=datetime.combine(d, clock, tzinfo=zone), items=items, time_known=False,
+                              note="미국 현지 예정일 기준 · 한국 날짜는 장 마감 후 발표 가정" if us else "날짜는 Yahoo 예정일", **made), earnings_status="estimate"))
         try:
             past = ticker.get_earnings_dates(limit=6)
         except Exception:  # 지난 실적은 덧붙이는 정보라 없어도 예정일은 보여 준다
@@ -343,7 +343,10 @@ def earnings(start, today):
             items = [{"label": "주당순이익(EPS)", "unit": "", "actual": _fmt(row.get("Reported EPS")), "prev": None},
                      {"label": "추정치", "unit": "", "actual": _fmt(row.get("EPS Estimate")), "prev": None},
                      {"label": "추정 대비", "unit": "%", "actual": _fmt(row.get("Surprise(%)")), "prev": None}]
-            out.append(_event(when=datetime.combine(day, clock, tzinfo=zone), items=items, **made))
+            timestamp = at.to_pydatetime()
+            known = timestamp.astimezone(zone).time() != time(0)
+            out.append(dict(_event(when=timestamp if known else datetime.combine(day, clock, tzinfo=zone),
+                                   time_known=known, items=items, **made), earnings_status="reported"))
     return out
 
 
@@ -416,6 +419,23 @@ def rule_events(start, end):
     return out
 
 
+def reconcile_earnings(entries):
+    """같은 종목의 인접 날짜에 잡힌 예정·발표 자료를 하나로 묶는다."""
+    priority = {"official": 0, "reported": 1, "estimate": 2}
+    kept = []
+    others = [e for e in entries if "earnings_status" not in e]
+    for e in sorted((v for v in entries if "earnings_status" in v),
+                    key=lambda v: priority[v["earnings_status"]]):
+        day = datetime.fromisoformat(e["at"]).date()
+        match = next((v for v in kept if v["kind"] == e["kind"]
+                      and abs((datetime.fromisoformat(v["at"]).date()-day).days) <= 1), None)
+        if match is None:
+            kept.append(e.copy())
+        elif not match["items"] and e["earnings_status"] == "reported":
+            match["items"] = e["items"]
+    return others + kept
+
+
 def collect(today=None):
     """이달 1일부터 오늘 뒤 HORIZON_DAYS일까지의 일정. 같은 일정이 여러 출처에 있으면 Yahoo(결과·직전 값 있음)를 남긴다."""
     now = datetime.now(KST)
@@ -437,6 +457,13 @@ def collect(today=None):
             events += fetch()
         except Exception as e:  # 한 출처가 실패해도 나머지는 보여 준다
             errors.append(f"{name}을(를) 받지 못했습니다 ({e.__class__.__name__})")
+    # 공식 발표 일정. 발표 예정 시각과 실적 설명회 시각을 구별한다.
+    nvda_at = datetime(2026, 11, 18, 6, 20, tzinfo=KST)
+    if first <= nvda_at.date() <= end:
+        events.append(dict(_event("earn_NVDA", "엔비디아 실적 발표", "co", 3, nvda_at,
+                   "https://nvidianews.nvidia.com/news/nvidia-sets-conference-call-for-third-quarter-financial-results-6928873",
+                   note="회사 공지 · 한국 시간 약 06:20 발표 예정, 07:00 설명회"), earnings_status="official"))
+    events = reconcile_earnings(events)
     keep = {}
     for e in events:
         d = datetime.fromisoformat(e["at"]).date()

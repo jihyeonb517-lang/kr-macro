@@ -64,7 +64,7 @@ CSS = """
 .cosm-head h2{font-size:17px;margin:0 0 7px}.cosm-source,.cosm-updated{font-size:12px;color:var(--mu)}
 .cosm-controls,.cosm-products{display:flex;flex-wrap:wrap;gap:8px;margin:18px 0}
 .cosm-controls .igroup{margin:0}.cosm-btn{font:inherit;font-size:12px;color:var(--text-2);cursor:pointer;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:8px 14px}
-.cosm-btn:hover{color:var(--text);border-color:var(--accent)}.cosm-btn.on{color:var(--accent);border-color:var(--accent);background:#ffad3312}
+.cosm-btn:hover{color:var(--text);border-color:var(--accent)}.cosm-btn.on{color:var(--accent);border-color:var(--accent);background:var(--accent-soft)}
 .cosm-frame{border:1px solid var(--border);border-radius:14px;padding:14px 10px 4px;background:var(--bg)}
 .cosm-title{text-align:center;font-size:14px;font-weight:700;margin:0 0 4px}.cosm-description{text-align:center;font-size:11px;color:var(--mu)}
 .cosm-scope{text-align:center;font-size:11px;color:var(--mu);margin-top:5px;line-height:1.6}
@@ -163,32 +163,32 @@ function cosmeticsOption(points) {
   return {
     animation: false, backgroundColor: 'transparent',
     grid: {left: 76, right: 72, top: 65, bottom: 42},
-    legend: {top: 16, data: ['전년 대비 (%)', '수출액 (백만 달러)'], textStyle: {color: '#81939b', fontSize: 11}},
+    legend: {top: 16, data: ['전년 대비 (%)', '수출액 (백만 달러)'], textStyle: {color: plotColor('text-3'), fontSize: 11}},
     tooltip: {
-      trigger: 'axis', backgroundColor: '#262626', borderColor: '#353535',
-      textStyle: {color: '#edf2f0', fontSize: 12},
+      trigger: 'axis', backgroundColor: plotColor('surface'), borderColor: plotColor('border'),
+      textStyle: {color: plotColor('text'), fontSize: 12},
       formatter: rows => {
         const point = points[rows[0].dataIndex];
         return point.key + '<br>수출액 <b>' + cosmeticsAmount(point.amount) + ' 백만 달러</b><br>전년 대비 <b>' + cosmeticsPercent(point.yoy) + '</b>';
       },
     },
     xAxis: {type: 'category', data: points.map(point => point.label),
-      axisLine: {lineStyle: {color: '#353535'}}, axisTick: {alignWithLabel: true},
-      axisLabel: {color: '#81939b', fontSize: 11, hideOverlap: true}},
+      axisLine: {lineStyle: {color: plotColor('border')}}, axisTick: {alignWithLabel: true},
+      axisLabel: {color: plotColor('text-3'), fontSize: 11, hideOverlap: true}},
     yAxis: [
-      {type: 'value', name: '백만 달러', min: 0, nameTextStyle: {color: '#81939b'},
-        axisLabel: {color: '#81939b', formatter: value => value.toLocaleString('ko-KR')},
-        splitLine: {lineStyle: {color: '#2c2c2c'}}},
-      {type: 'value', name: '전년 대비', nameTextStyle: {color: '#81939b'},
-        axisLabel: {color: '#81939b', formatter: value => (value > 0 ? '+' : '') + value + '%'},
+      {type: 'value', name: '백만 달러', min: 0, nameTextStyle: {color: plotColor('text-3')},
+        axisLabel: {color: plotColor('text-3'), formatter: value => value.toLocaleString('ko-KR')},
+        splitLine: {lineStyle: {color: plotColor('grid')}}},
+      {type: 'value', name: '전년 대비', nameTextStyle: {color: plotColor('text-3')},
+        axisLabel: {color: plotColor('text-3'), formatter: value => (value > 0 ? '+' : '') + value + '%'},
         splitLine: {show: false}},
     ],
     series: [
       {name: '수출액 (백만 달러)', type: 'bar', data: points.map(point => point.amount), barMaxWidth: 60,
-        itemStyle: {color: 'rgba(255,173,51,0.30)', borderColor: '#b6812f', borderWidth: 1}},
+        itemStyle: {color: plotColor('bar')}},
       {name: '전년 대비 (%)', type: 'line', yAxisIndex: 1, data: points.map(point => point.yoy),
         connectNulls: false, symbol: 'circle', symbolSize: 7, smooth: false,
-        lineStyle: {color: '#81939b', width: 2}, itemStyle: {color: '#ff7770'}},
+        lineStyle: {color: plotColor('text-3'), width: 2}, itemStyle: {color: plotColor('bad')}},
     ],
   };
 }

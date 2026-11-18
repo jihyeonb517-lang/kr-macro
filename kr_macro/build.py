@@ -29,6 +29,10 @@ import yfinance as yf
 import events
 import news
 import cosmetics
+import dashboard_theme
+import dashboard_layout
+import trend_charts
+import local_views
 
 warnings.filterwarnings("ignore", category=DeprecationWarning,
                         message="The 'generic' unit for NumPy timedelta is deprecated.*")
@@ -73,7 +77,7 @@ COLORS = {
     "red": "#ff7770", "orange": "#ffad33", "yellow": "#e8d36a", "gray": "#5d686d",
     "blue": "#49a5e8", "green": "#62d59a", "dkgreen": "#2fb876",
 }
-TONE = {"pos": "#62d59a", "neu": "#b3c0c5", "neg": "#ffbf59"}
+TONE = {"pos": "var(--good)", "neu": "var(--text-2)", "neg": "var(--warn)"}
 GROUP_NUM = "①②③④⑤⑥"
 KST = "Asia/Seoul"
 
@@ -936,9 +940,9 @@ def delta_unit(unit):
 def heat(v, cap):
     """값 크기에 따라 초록(+)/빨강(−) 배경."""
     if v is None or np.isnan(v):
-        return "background:#1b1b1b"
+        return "background:var(--bg)"
     if v == 0:
-        return "background:#303030"
+        return "background:var(--surface-2)"
     a = 0.18 + 0.72 * min(abs(v) / cap, 1)
     rgb = "98,213,154" if v > 0 else "255,119,112"
     return f"background:rgba({rgb},{a:.2f})"
@@ -973,7 +977,7 @@ def render_period(rows):
     for r in rows:
         cells = "".join(f'<td class="hc" style="{heat(r[k], c)}">{num(r[k], 1, "%", True)}</td>' for k, c in caps.items())
         fh = r["from_high"]
-        col = "#edf2f0" if fh > -5 else "#ffad33" if fh > -15 else "#ff7770"
+        col = "var(--text)" if fh > -5 else "var(--warn)" if fh > -15 else "var(--bad)"
         stale = f'<small>{r["date"]:%m-%d} 기준</small>' if (TODAY - r["date"]).days > 3 else ""
         body += (
             f'<tr><th>{esc(r["name"])}</th><td class="px">{num(r["price"], r["decimals"])}{stale}</td>{cells}'
@@ -996,23 +1000,18 @@ def render_sectors(rel, partial):
         cells = "".join(f'<td class="hc" style="{heat(row[m], 12)}">{num(row[m], 1, "", True)}</td>' for m in months)
         t = row["3개월 합계"]
         body += (f'<tr><th>{esc(name)}</th>{cells}'
-                 f'<td class="sum" style="color:{"#62d59a" if t > 0 else "#ff7770"}">{num(t, 1, "", True)}</td></tr>')
+                 f'<td class="sum" style="color:{"var(--good)" if t > 0 else "var(--bad)"}">{num(t, 1, "", True)}</td></tr>')
     return (f'<table class="stab"><thead><tr><th></th>{head}<th>3개월<br>합계</th></tr></thead>'
             f'<tbody>{body}</tbody></table>')
 
 
 CSS = """
-:root{color-scheme:dark;--series-1:#49a5e8;--bg:#050505;--surface:#262626;--surface-2:#303030;--border:#353535;--text:#edf2f0;--text-2:#b3c0c5;--text-3:#81939b;--accent:#ffad33;--good:#62d59a;--warn:#ffbf59;--bad:#ff7770;--card:var(--surface);--line:var(--border);--tx:var(--text);--mu:var(--text-3)}
 *{box-sizing:border-box}[hidden]{display:none!important}
 body{margin:0;background:var(--bg);color:var(--tx);font:13px/1.45 "Apple SD Gothic Neo","Malgun Gothic","Noto Sans KR",system-ui,sans-serif}
-.wrap{max-width:1320px;margin:0 auto;padding:16px}
 h1{font-size:17px;margin:0 0 4px}
 .meta{color:var(--mu);font-size:12px}
-.tabs{display:flex;margin:12px 0;border:1px solid var(--border);border-radius:14px;overflow:hidden;width:fit-content;background:var(--surface)}
-.tabs button{background:transparent;border:0;border-right:1px solid var(--border);color:var(--text-2);padding:9px 18px;cursor:pointer;font:inherit;font-weight:600;font-size:12px}.tabs button:last-child{border-right:0}.tabs button:hover{background:var(--surface-2);color:var(--text)}
-.tabs button.on{background:var(--accent);color:#091018;font-weight:700}
 .tab{display:none}.tab.on{display:block}
-.card{background:var(--surface);border:1px solid var(--border);border-radius:24px;padding:18px;margin-bottom:14px;box-shadow:inset 0 1px #ffffff0a}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:24px;padding:18px;margin-bottom:14px;box-shadow:var(--card-shadow)}
 .status b.big{font-size:15px}
 .headline{background:var(--bg);border-left:3px solid var(--accent);padding:8px 12px;margin:10px 0;border-radius:4px}
 .kpis{color:var(--mu)}.kpis b{color:var(--tx)}
@@ -1025,7 +1024,7 @@ h1{font-size:17px;margin:0 0 4px}
 .chead{font-size:18px;font-weight:700;margin:2px 0 6px}.chead .cdate{font-size:12px;font-weight:500;color:var(--mu);background:var(--bg);border-radius:5px;padding:2px 8px;margin-right:10px;vertical-align:middle}
 .clegend{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:4px 14px;color:var(--mu);font-size:12px;margin:8px 0 4px}
 .clegend i{display:inline-block;width:14px;height:3px;border-radius:2px;margin-right:5px;vertical-align:middle}
-.cpanel{position:relative;border-top:1px solid var(--line);padding-top:4px}.cname{position:absolute;left:4px;top:6px;font-size:12px;color:var(--mu);z-index:2}
+.cpanel{position:relative;border-top:1px solid var(--line);padding-top:4px}.cname{margin:4px 4px 0;font-size:15px;font-weight:600;color:var(--text);font-variant-numeric:tabular-nums}
 .cchart{width:100%;height:270px}
 .csub{color:var(--text-2);margin:-2px 0 8px}
 .xchart{width:100%;height:330px}
@@ -1039,17 +1038,17 @@ h1{font-size:17px;margin:0 0 4px}
 .xaxis{display:flex;justify-content:space-between;color:var(--mu);font-size:10.5px;margin-top:3px}
 .shead{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:flex-end;gap:12px;border-left:3px solid var(--accent)}
 .sname b{font-size:20px}.sname small{display:block;color:var(--mu);margin-top:4px;font-size:12px}
-.sbadge{border:1px solid var(--accent);color:var(--accent);background:rgba(255,173,51,.1);font-weight:700;font-size:12px;padding:1px 6px;margin-left:8px;vertical-align:middle}
+.sbadge{border:1px solid var(--accent);color:var(--accent);background:var(--accent-soft);font-weight:700;font-size:12px;padding:1px 6px;margin-left:8px;vertical-align:middle}
 .smkt{color:var(--mu);font-size:12px;margin-left:6px}
 .sprice{text-align:right}.sprice small{display:block;color:var(--mu);font-size:11px}.sprice b{display:block;font-size:24px}.sprice span{font-weight:700}
 .schartwrap{position:relative}.schart{width:100%;height:560px}
-.rsiwrap{position:relative;border-top:1px solid #2a2a2a}.rsichart{width:100%;height:150px}
+.rsiwrap{position:relative;border-top:1px solid var(--border)}.rsichart{width:100%;height:150px}
 .sright{display:flex;align-items:flex-end;gap:16px;flex-wrap:wrap}.srsi{text-align:right;border-left:1px solid var(--border);padding-left:16px}.srsi small{display:block;color:var(--mu);font-size:11px}
 .srsi b{font-size:24px;margin-right:6px}.srsi span{font-weight:700;color:var(--text-2)}
 .srsi.hot b,.srsi.hot span{color:var(--warn)}.srsi.cold b,.srsi.cold span{color:var(--series-1)}
 @media (max-width:760px){.srsi{border-left:0;padding-left:0;text-align:left}}
 .slegend{position:absolute;left:10px;top:8px;z-index:3;font-size:12.5px;color:var(--text-2);pointer-events:none;display:flex;flex-wrap:wrap;gap:4px 12px;align-items:center}
-.smabox{position:absolute;left:10px;top:36px;z-index:3;pointer-events:none;background:rgba(10,10,10,.82);border:1px solid #3a3a3a;border-radius:8px;padding:8px 10px;font-size:12px;color:var(--text-2);font-variant-numeric:tabular-nums;min-width:210px}
+.smabox{position:absolute;left:10px;top:36px;z-index:3;pointer-events:none;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:8px 10px;font-size:12px;color:var(--text-2);font-variant-numeric:tabular-nums;min-width:210px}
 .smabox .mh{color:var(--text);font-weight:600;margin-bottom:5px}.smabox table{border-collapse:collapse;width:100%}.smabox td{padding:2px 0}.smabox td+td{text-align:right;padding-left:12px}
 .smabox i{display:inline-block;width:10px;height:2px;margin:0 6px 3px 0}.smabox small{color:var(--mu);font-size:10.5px}
 .slegend .lname{color:var(--text);font-size:14px;font-weight:600}.slegend b{font-weight:500;margin:0 6px 0 2px}.slegend .lma i{display:inline-block;width:10px;height:2px;margin:0 3px 3px 6px}
@@ -1065,7 +1064,7 @@ h1{font-size:17px;margin:0 0 4px}
 .qtab th,.qtab td{padding:9px 6px;border-bottom:1px solid var(--border);background:transparent;border-left:0;border-radius:0;text-align:right;white-space:nowrap}
 .qtab thead th{color:var(--mu);font-weight:600;font-size:11.5px}.qtab thead th.qgrp{text-align:center;color:var(--text-2);border-bottom:1px solid var(--border)}
 .qtab tbody th{text-align:left;color:var(--text);font-family:inherit;font-weight:700;font-size:12.5px}.qtab tbody th small{display:block;color:var(--mu);font-weight:400;font-size:10.5px}
-.qtab th:first-child{text-align:left}.qtab td.up{color:#ff7770}.qtab td.down{color:#49a5e8}.qtab td{color:var(--text)}.qtab td.qnow{font-weight:700}
+.qtab th:first-child{text-align:left}.qtab td.up{color:var(--bad)}.qtab td.down{color:var(--series-1)}.qtab td{color:var(--text)}.qtab td.qnow{font-weight:700}
 .qshort{margin-top:14px}.qnote{color:var(--text-2);font-size:12px;margin:12px 0 0}.qnote b{color:var(--text)}
 @media (max-width:1100px){.qsplit{grid-template-columns:minmax(0,1fr)}}
 .ftab.fwide{min-width:760px}.ftab td small{display:block;font-size:10.5px;font-weight:500;opacity:.8;margin-top:2px}
@@ -1094,14 +1093,14 @@ h1{font-size:17px;margin:0 0 4px}
 .fbreak tr.sub th,.fbreak tr.sub td{color:var(--text);font-weight:600}.fbreak tr.total th,.fbreak tr.total td{color:var(--text);font-weight:700;border-top:1px solid var(--text-3)}
 .tvcard{padding:0;overflow:hidden}.tvtitle{display:flex;justify-content:space-between;align-items:center;padding:16px 20px;border-bottom:1px solid var(--border)}
 .tvtitle b{font-size:16px}.tvtitle span{color:var(--mu);font-size:12px}.tvtitle a{color:var(--mu);text-decoration:none}.tvtitle a:hover{color:var(--accent)}
-.tvframe{margin:18px 20px 6px;background:#000;border:1px solid #1b1b1b}
-.tvbar,.tvfoot{display:flex;align-items:center;gap:2px;padding:6px 8px;background:#000}
+.tvframe{margin:18px 20px 6px;background:var(--surface);border:1px solid var(--border)}
+.tvbar,.tvfoot{display:flex;align-items:center;gap:2px;padding:6px 8px;background:var(--surface)}
 .tvbar button,.tvfoot button{background:transparent;border:0;color:var(--text-2);font:inherit;font-size:13px;padding:5px 8px;border-radius:4px;cursor:pointer}
-.tvbar button:hover,.tvfoot button:hover{background:#1f1f1f;color:var(--text)}.tvbar button.on,.tvfoot button.on{background:#2a2a2a;color:var(--text)}
+.tvbar button:hover,.tvfoot button:hover{background:var(--surface);color:var(--text)}.tvbar button.on,.tvfoot button.on{background:var(--grid);color:var(--text)}
 .tvlbl{color:var(--mu);font-size:12px;margin:0 4px}
 .tvbar{flex-wrap:wrap}
 .mabtn i{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:5px}.tvbar .mabtn:not(.on){opacity:.4}.tvbar .mabtn:not(.on) i{background:transparent!important;border:1px solid var(--mu)}
-.tvbar .sep{width:1px;height:20px;background:#2a2a2a;margin:0 6px}
+.tvbar .sep{width:1px;height:20px;background:var(--grid);margin:0 6px}
 .tvclock{margin-left:auto;color:var(--text-2);font-size:12px;font-variant-numeric:tabular-nums}
 .tvcredit{text-align:center;color:var(--mu);font-size:11px;padding:2px 0 14px}
 .row:target{background:var(--surface-2);outline:1px solid var(--accent);border-radius:6px}
@@ -1125,9 +1124,9 @@ h1{font-size:17px;margin:0 0 4px}
 .seg i{display:block;height:9px;border-radius:2px;opacity:.85}
 .marks{position:absolute;left:0;right:0;bottom:0;height:9px}
 .dot{position:absolute;top:50%;transform:translate(-50%,-50%);border-radius:50%}
-.dot.now{width:15px;height:15px;border:2px solid #fff;box-shadow:0 0 0 2px #0008}
-.dot.prev{width:7px;height:7px;background:var(--bg);border:1.5px solid #fff}
-.trail{position:absolute;top:50%;border-top:1.5px dotted #fff;opacity:.7}
+.dot.now{width:15px;height:15px;border:2px solid var(--text);box-shadow:0 0 0 2px #0008}
+.dot.prev{width:7px;height:7px;background:var(--bg);border:1.5px solid var(--text)}
+.trail{position:absolute;top:50%;border-top:1.5px dotted var(--text);opacity:.7}
 .mean{background:var(--bg);border-radius:6px;padding:6px 8px}
 .pos b{font-size:15px}.mini{height:3px;background:var(--surface-2);border-radius:2px;margin:3px 0}.mini i{display:block;height:3px;background:var(--text-2);border-radius:2px}
 
@@ -1152,7 +1151,7 @@ td.hi{background:var(--bg);border-radius:4px}
 .nperiod{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-bottom:6px}.nperiod>span{color:var(--mu);font-size:12px;margin-right:4px}
 .nperiod button{background:var(--surface);border:1px solid var(--border);color:var(--text-2);border-radius:10px;padding:6px 12px;font:inherit;font-size:12px;font-weight:600;cursor:pointer}
 .nperiod button b{color:var(--mu);font-weight:500;margin-left:2px}.nperiod button:hover{color:var(--tx)}
-.nperiod button.on{border-color:var(--accent);color:var(--accent);background:rgba(255,173,51,.1)}.nperiod button.on b{color:var(--accent)}
+.nperiod button.on{border-color:var(--accent);color:var(--accent);background:var(--accent-soft)}.nperiod button.on b{color:var(--accent)}
 .nday h3{font-size:14px;margin:22px 0 8px;padding-bottom:8px;border-bottom:1px solid var(--border)}.nday h3 small{color:var(--mu);font-weight:500}
 .nbox{border-left:2px solid var(--border)}
 .nrow{display:flex;align-items:flex-start;gap:12px;padding:10px 12px;border-bottom:1px solid var(--border)}.nrow:hover{background:var(--surface-2)}
@@ -1170,33 +1169,32 @@ td.hi{background:var(--bg);border-radius:4px}
 @media (max-width:760px){.ntools{flex-direction:column}.ntools select{min-width:0}.nrow{gap:6px 10px}.nmain{flex-basis:100%;order:4}}
 .evtools{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px}
 .evfilter{display:flex;flex-wrap:wrap;gap:6px}.evfilter button{background:var(--surface);border:1px solid var(--border);color:var(--text-2);border-radius:10px;padding:6px 12px;font:inherit;font-size:12px;font-weight:600;cursor:pointer}
-.evfilter button.on{border-color:var(--accent);color:var(--accent);background:rgba(255,173,51,.1)}.evonly{color:var(--text-2);font-size:12px;cursor:pointer}
+.evfilter button.on{border-color:var(--accent);color:var(--accent);background:var(--accent-soft)}.evonly{color:var(--text-2);font-size:12px;cursor:pointer}
 .evlist{columns:2 460px;column-gap:28px}.evmonth{font-size:13px;color:var(--mu);margin:14px 0 2px;break-after:avoid}
 .evrow{display:block;break-inside:avoid;padding:12px 4px;border-bottom:1px solid var(--border);color:inherit;text-decoration:none}.evrow:hover .evtitle{color:var(--accent)}
 .evtop{display:flex;align-items:center;gap:8px}.evtime{color:var(--mu);font-family:ui-monospace,Consolas,monospace;font-size:13px}.evtime b{color:var(--text-2);font-weight:500}
-.evd{font-size:11px;font-weight:700;border-radius:6px;padding:1px 6px;background:var(--surface-2);color:var(--text-2)}.evd:empty{display:none}.evd.today{background:rgba(255,173,51,.15);color:var(--accent)}
+.evd{font-size:11px;font-weight:700;border-radius:6px;padding:1px 6px;background:var(--surface-2);color:var(--text-2)}.evd:empty{display:none}.evd.today{background:var(--accent-soft);color:var(--accent)}
 .evstars{margin-left:auto;color:var(--accent);letter-spacing:1px;white-space:nowrap}.evstars i{color:var(--mu);font-style:normal}
 .evtitle{font-weight:700;font-size:14px;margin-top:5px}.evsub{display:flex;flex-wrap:wrap;gap:4px 10px;margin-top:5px;color:var(--mu);font-size:11.5px}
-.evreg{font-weight:700}.evreg.us{color:#49a5e8}.evreg.kr{color:#62d59a}.evreg.jp{color:#ff7770}.evreg.co{color:#ffad33}.evreg.mk{color:#c39bff}.evreg.cn{color:#ff9f7a}.evreg.eu{color:#7fd6d0}
+.evreg{font-weight:700}.evreg.us{color:var(--series-1)}.evreg.kr{color:var(--good)}.evreg.jp{color:var(--bad)}.evreg.co{color:var(--series-2)}.evreg.mk{color:var(--series-3)}.evreg.cn{color:#ff9f7a}.evreg.eu{color:#7fd6d0}
 .evact{color:var(--text)}.evitems{display:flex;flex-wrap:wrap;gap:3px 14px;margin-top:6px;color:var(--text-2);font-size:12px}.evitems b{color:var(--text);font-weight:600}.evwhy{margin-top:6px;color:var(--text-2);font-size:12px;line-height:1.5}
 .evrow.past{opacity:.4}.evday .evrow.past{opacity:.8}
 .cal{margin:10px 0 18px}.calnav{display:flex;align-items:center;justify-content:center;gap:22px;margin-bottom:10px}.calnav b{font-size:18px;min-width:130px;text-align:center}
 .calnav button{background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:8px;width:34px;height:32px;font-size:18px;cursor:pointer}
 .calnav button:disabled{opacity:.3;cursor:default}.calnav button:not(:disabled):hover{border-color:var(--accent);color:var(--accent)}
 .calhead,.calgrid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:6px}.calhead span{text-align:center;color:var(--text-2);font-size:12px;font-weight:700;padding:4px 0}
-.calhead span:first-child{color:#ff7770}.calhead span:last-child{color:#49a5e8}
+.calhead span:first-child{color:var(--bad)}.calhead span:last-child{color:var(--series-1)}
 .calcell{background:var(--bg);border:1px solid var(--border);border-radius:10px;min-height:112px;padding:7px 8px;min-width:0;cursor:pointer}.calcell:hover{border-color:var(--text-3)}
 .calcell.blank{background:transparent;border:0;cursor:default}.calcell.today{border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent)}
-.calcell .cd{font-weight:700;font-size:13px;margin-bottom:4px;color:var(--text)}.calcell.we .cd{color:#49a5e8}.calcell.sun .cd{color:#ff7770}.calcell.today .cd{color:var(--accent)}
+.calcell .cd{font-weight:700;font-size:13px;margin-bottom:4px;color:var(--text)}.calcell.we .cd{color:var(--series-1)}.calcell.sun .cd{color:var(--bad)}.calcell.today .cd{color:var(--accent)}
 .calcell .ci{display:flex;align-items:center;gap:5px;font-size:11.5px;color:var(--text-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.55}
 .calcell .ci i{flex-shrink:0;width:6px;height:6px;border-radius:50%}.calcell .ci span{overflow:hidden;text-overflow:ellipsis}
 .calcell .cmore{color:var(--mu);font-size:11px}
-.ci.us i{background:#49a5e8}.ci.kr i{background:#62d59a}.ci.jp i{background:#ff7770}.ci.co i{background:#ffad33}.ci.mk i{background:#c39bff}.ci.cn i{background:#ff9f7a}.ci.eu i{background:#7fd6d0}.ci.s3 span{color:var(--text);font-weight:700}
+.ci.us i{background:var(--series-1)}.ci.kr i{background:var(--good)}.ci.jp i{background:var(--bad)}.ci.co i{background:var(--series-2)}.ci.mk i{background:var(--series-3)}.ci.cn i{background:#ff9f7a}.ci.eu i{background:#7fd6d0}.ci.s3 span{color:var(--text);font-weight:700}
 .calcell.picked{border-color:var(--text-2);background:var(--surface-2)}
 .evday{background:var(--bg);border:1px solid var(--border);border-radius:14px;padding:6px 16px 4px;margin:-6px 0 14px}
 .evdayhead{font-weight:700;font-size:14px;padding:8px 4px 2px}.evday .evrow:last-child{border-bottom:0}.evday .muted{padding:8px 4px}
 @media (max-width:760px){.calcell{min-height:52px;padding:5px}.calcell .ci{display:inline-flex}.calcell .ci span,.calcell .cmore{display:none}.calhead,.calgrid{gap:3px}}
-.upnext{margin:-2px 0 10px;color:var(--text-2);font-size:12.5px}.upnext a{color:var(--accent);text-decoration:none;font-weight:700;margin-right:8px}.upnext b{color:var(--text)}
 .nfilter{display:flex;gap:6px;margin-bottom:8px}
 .nfilter button{background:var(--bg);border:1px solid var(--line);color:var(--tx);padding:5px 12px;border-radius:5px;cursor:pointer;font:inherit;font-size:12px}
 .nfilter button.on{border-color:var(--accent);color:var(--accent)}
@@ -1209,10 +1207,9 @@ td.hi{background:var(--bg);border-radius:4px}
 .nlist details li{margin:3px 0}.nlist details a{color:var(--text-2);text-decoration:none}.nlist details a:hover{color:var(--accent)}
 .nlist details span{color:var(--mu)}
 button:focus-visible,a:focus-visible,summary:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
-.tabs{max-width:100%;overflow-x:auto;white-space:nowrap;flex-wrap:wrap}.tabs button{flex-shrink:0}
 .tvbar,.tvfoot{flex-wrap:wrap}.tvframe{margin:12px 8px 6px}.asof{font-size:10px}
 @media (max-width:900px){.fbody{grid-template-columns:1fr}}
-@media (max-width:760px){.fkpis{grid-template-columns:repeat(2,1fr)}.fkpi b{font-size:19px}.gcards{grid-template-columns:repeat(2,1fr)}.wrap{padding:8px}.card{padding:12px}.tabs button{padding:9px 10px}.tvclock{width:100%;margin-left:0}.cchart{min-width:500px}.cpanel{overflow-x:auto}}
+@media (max-width:760px){.fkpis{grid-template-columns:repeat(2,1fr)}.fkpi b{font-size:19px}.gcards{grid-template-columns:repeat(2,1fr)}.card{padding:12px}.tvclock{width:100%;margin-left:0}.cchart{min-width:500px}.cpanel{overflow-x:auto}}
 """
 
 
@@ -1333,6 +1330,21 @@ def _credit_view(s, unit, decimals):
     }
 
 
+def credit_changes(credit, sessions, asof):
+    """최신 공시 잔고에서 1·5거래일 전 잔고를 뺀다. 공시 누락일은 비워 둔다."""
+    dates = credit.index.union(sessions).sort_values()
+    dates = dates[dates <= asof]
+    changes = []
+    for days in (1, 5):
+        previous = dates[-days - 1] if len(dates) > days else None
+        balance = credit.get(previous)
+        changes.append({
+            "date": previous.strftime("%Y-%m-%d") if previous is not None else None,
+            "amount": int(credit.loc[asof] - balance) if pd.notna(balance) and balance > 0 else None,
+        })
+    return changes
+
+
 def credit_panel(name, credit, index, cap, since):
     """한 시장(코스피/코스닥)의 차트 데이터: 금액(조원)과 시총 대비 비율(%) 두 가지."""
     credit = credit.where(credit > 0)
@@ -1357,6 +1369,7 @@ def credit_panel(name, credit, index, cap, since):
                 if days > 0 else f"{name} 신용 {last_v / 1e12:.1f}조")
     return {
         "name": name, "asof": day(last_d), "headline": headline,
+        "changes": credit_changes(credit, index.dropna().index, last_d),
         "index": [[day(d), round(v, 2)] for d, v in df["index"].dropna().items()],
         "amount": _credit_view(df["credit"] / 1e12, "조", 1),
         "ratio": _credit_view(df["ratio"], "%", 2),
@@ -1385,104 +1398,84 @@ def credit_charts(px):
     return {"panels": panels, "notes": notes}
 
 
-def deposit_panel(calc):
+def deposit_index(view, kospi_close):
+    first, last = (pd.Timestamp(view["line"][i][0]) for i in (0, -1))
+    return [[date.strftime("%Y-%m-%d"), round(value, 2)]
+            for date, value in kospi_close.loc[first:last].dropna().items()]
+
+
+def deposit_panel(calc, kospi_close):
     since = TODAY - pd.DateOffset(years=CREDIT_WINDOW_YEARS)
     amount = kofia(calc["table"])[calc["column"]].loc[since:]
     view = _credit_view(amount[amount > 0] / 1e12, "조", 2)
     if view is None:
         raise ValueError("투자자예탁금 데이터가 비어 있습니다")
-    return {"name": "투자자예탁금", "amount": view}
+    return {"name": "투자자예탁금", "amount": view, "index": deposit_index(view, kospi_close)}
 
 
 ECHARTS_URL = "https://cdnjs.cloudflare.com/ajax/libs/echarts/5.5.0/echarts.min.js"
 LWC_URL = "https://cdn.jsdelivr.net/npm/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"
 
-CREDIT_JS = r"""
-const CREDIT = __DATA__;
-const COLORS = {코스피: '#49a5e8', 코스닥: '#ffad33', 투자자예탁금: '#62d59a', index: '#81939b', grid: '#2c2c2c', text: '#81939b'};
-function fmt(v, view) { return view.decimals === 1 ? v.toFixed(1) + view.unit : v.toFixed(2) + view.unit; }
-function creditOption(panel, kind) {
-  const view = panel[kind], color = COLORS[panel.name];
-  const vals = view.line.map(p => p[1]), lo = Math.min(...vals), hi = Math.max(...vals);
-  const pad = Math.max((hi - lo) * 0.12, 10 ** -view.decimals);
-  const index = panel.index ?? [], lastIdx = index.at(-1), last = view.line.at(-1);
-  const indexName = panel.name + ' 지수', seriesName = panel.index ? panel.name + ' 신용' : panel.name;
-  return {
-    animation: false, backgroundColor: 'transparent',
-    grid: {left: 12, right: panel.index ? 176 : 84, top: 14, bottom: 26},
-    tooltip: {trigger: 'axis', backgroundColor: '#262626', borderColor: '#353535', textStyle: {color: '#edf2f0', fontSize: 12},
-      formatter: ps => ps[0].axisValue + '<br>' + ps.filter(p => p.seriesName === indexName || p.seriesName === seriesName)
-        .map(p => p.marker + p.seriesName + ' <b>' + (p.seriesName === indexName ? p.value[1].toLocaleString() : fmt(p.value[1], view)) + '</b>').join('<br>')},
-    xAxis: {type: 'time', axisLine: {lineStyle: {color: '#353535'}}, axisLabel: {color: COLORS.text, fontSize: 11,
-      formatter: {year: '{yyyy}년', month: '{M}월', day: '{M}/{d}'}}, splitLine: {show: false}},
-    yAxis: [
-      {type: 'value', position: 'right', min: +(lo - pad).toFixed(4), max: +(hi + pad).toFixed(4), splitLine: {lineStyle: {color: COLORS.grid}},
-       axisLabel: {color: COLORS.text, fontSize: 10, formatter: v => fmt(v, view)}},
-      {type: 'value', show: !!panel.index, position: 'right', offset: 56, scale: true, splitLine: {show: false},
-       axisLabel: {color: COLORS.index, fontSize: 10, formatter: v => Math.round(v).toLocaleString()}},
-    ],
-    series: [
-      {name: indexName, type: 'line', yAxisIndex: 1, data: index, showSymbol: false, z: 1,
-       lineStyle: {color: COLORS.index, width: 1.2, opacity: 0.6},
-       markPoint: {symbol: 'roundRect', symbolSize: [52, 18], symbolOffset: [146, 0], data: lastIdx ? [{coord: lastIdx, value: Math.round(lastIdx[1]).toLocaleString()}] : [],
-         itemStyle: {color: COLORS.index}, label: {color: '#091018', fontSize: 11, fontWeight: 'bold'}}},
-      {name: seriesName, type: 'line', data: view.line, showSymbol: false, z: 3, lineStyle: {color: color, width: 2},
-       markPoint: {data: [
-         ...view.labels.map(p => ({coord: p, value: fmt(p[1], view), symbol: 'circle', symbolSize: 1,
-           label: {show: true, color: color, fontWeight: 'bold', fontSize: 11, position: 'top', distance: 6}})),
-         {coord: last, value: fmt(last[1], view), symbol: 'roundRect', symbolSize: [panel.index ? 50 : 58, 18], symbolOffset: [30, 0],
-          itemStyle: {color: color}, label: {show: true, color: '#091018', fontWeight: 'bold', fontSize: 11}},
-       ]}},
-    ],
-  };
-}
-const creditCharts = [];
-function drawCredit() {
-  if (creditCharts.length) return;
-  if (typeof echarts === 'undefined') { chartUnavailable('t4'); return; }
-  document.querySelectorAll('[data-credit]').forEach(el => {
-    const [i, kind] = el.dataset.credit.split(':');
-    const panel = i === 'deposit' ? CREDIT.deposit : CREDIT.panels[+i];
-    if (!panel[kind]) return;
-    const chart = echarts.init(el, null, {renderer: 'canvas'});
-    chart.setOption(creditOption(panel, kind));
-    if (i !== 'deposit') chart.group = 'credit-' + kind;
-    creditCharts.push(chart);
-  });
-  echarts.connect('credit-amount');
-}
-window.addEventListener('resize', () => creditCharts.forEach(c => c.resize()));
-"""
+def render_credit_changes(panels):
+    def change_cell(change):
+        amount = change["amount"]
+        if amount is None:
+            return "<td>자료 없음</td>"
+        value = abs(amount) / 1e8
+        number = f"{value:,.0f}" if value >= 1 else f"{value:,.2f}"
+        label = f"+{number}억 원 증가" if amount > 0 else f"−{number}억 원 감소" if amount < 0 else "0원 (보합)"
+        return f'<td>{label}<br><small>{esc(change["date"])} 대비</small></td>'
+
+    rows = "".join(
+        f'<tr><th scope="row">{esc(p["name"])}</th><td>{esc(p["asof"])}</td>'
+        + "".join(change_cell(change) for change in p["changes"]) + "</tr>"
+        for p in panels)
+    return ('<div class="scroll"><table aria-label="시장별 신용잔고 증감액"><thead><tr>'
+            '<th>시장</th><th>잔고 기준일</th><th>1거래일 증감</th><th>5거래일 증감</th>'
+            f'</tr></thead><tbody>{rows}</tbody></table></div>')
+
+
+def credit_index_heading(panel, name):
+    index = panel.get("index")
+    label = esc(name)
+    if not index:
+        return f'<div class="cname">{label}</div>'
+    date, close = index[-1]
+    return f'<div class="cname" title="{esc(date)} 종가">{label} : {close:,.0f}</div>'
 
 
 def render_credit(data):
     """신용잔고와 투자자예탁금 차트를 표시한다."""
-    legend = (
-        '<div class="clegend"><span><i style="background:#49a5e8"></i>코스피 신용</span>'
-        '<span><i style="background:#ffad33"></i>코스닥 신용</span><span><i style="background:#81939b"></i>지수</span></div>')
+    panels = data["panels"]
+    deposit = data["deposit"]
+    notes = "".join(f'<p class="note">{esc(n)}</p>' for n in data["notes"])
+    if deposit is None:
+        notes += '<p class="note">투자자예탁금 데이터를 받지 못했습니다.</p>'
+    if not panels and deposit is None:
+        return notes
+
+    legend = '<div class="clegend">'
+    if panels:
+        legend += ('<span><i style="background:var(--series-1)"></i>코스피 신용</span>'
+                   '<span><i style="background:var(--series-2)"></i>코스닥 신용</span>')
+    if deposit is not None:
+        legend += '<span><i style="background:var(--good)"></i>투자자예탁금</span>'
+    legend += '<span><i style="background:var(--text-3)"></i>지수</span></div>'
     heads = "".join(
         f'<div class="chead"><span class="cdate">{p["asof"][5:].replace("-", ".")}</span>{esc(p["headline"])}</div>'
-        for p in data["panels"])
-    notes = "".join(f'<p class="note">{esc(n)}</p>' for n in data["notes"])
-
-    def block():
-        return "".join(
-            f'<div class="cpanel"><div class="cname">{esc(p["name"])}</div><div class="cchart" data-credit="{i}:amount"></div></div>'
-            for i, p in enumerate(data["panels"]))
-
-    credit_html = ""
-    if data["panels"]:
-        credit_html = f'<div class="card">{heads}{legend}{block()}</div>'
-    deposit = data["deposit"]
-    if deposit is None:
-        deposit_html = '<p class="note">투자자예탁금 데이터를 받지 못했습니다.</p>'
-    else:
+        for p in panels)
+    changes = render_credit_changes(panels) if panels else ""
+    charts = "".join(
+        f'<div class="cpanel">{credit_index_heading(p, p["name"])}{trend_charts.controls()}<div class="cchart" data-credit="{i}:amount"></div></div>'
+        for i, p in enumerate(panels))
+    if deposit is not None:
         asof, amount = deposit["amount"]["line"][-1]
-        deposit_html = (
-            f'<div class="card"><div class="chead"><span class="cdate">{asof}</span>투자자예탁금 {amount:,.2f}조 원</div>'
-            f'<div class="cpanel"><div class="cchart" data-credit="deposit:amount"></div></div>'
-            f'<div class="legend">※ 출처: 금융투자협회 · 최근 {CREDIT_WINDOW_YEARS}년 일별 잔고</div></div>')
-    return notes + credit_html + deposit_html
+        index_heading = credit_index_heading(deposit, "코스피") if deposit.get("index") else ""
+        charts += (
+            f'<div class="cpanel"><div class="chead"><span class="cdate">{asof}</span>투자자예탁금 {amount:,.2f}조 원</div>'
+            f'{index_heading}{trend_charts.controls()}<div class="cchart" data-credit="deposit:amount"></div></div>')
+    source = f'<div class="legend">※ 출처: 금융투자협회 · 최근 {CREDIT_WINDOW_YEARS}년 일별 잔고</div>'
+    return f'{notes}<div class="card">{heads}{changes}{legend}{charts}{source}</div>'
 
 
 STOCK_JS = r"""
@@ -1493,7 +1486,7 @@ const TV = {};
 const UP = '#26a69a', DOWN = '#ef5350';  // TradingView 기본 색 (IV Terminal 차트와 같음)
 // 가격 눈금: 원 단위 정수, 거래량 공간으로 내려간 0 이하 눈금은 숨긴다.
 const PRICE_FMT = {type: 'custom', minMove: 1, formatter: p => p > 0 ? Math.round(p).toLocaleString() : ''};
-const MA = [[5, '#edf2f0'], [20, '#ffad33'], [60, '#49a5e8'], [120, '#62d59a'], [240, '#c39bff']];
+const MA = [[5, plotColor('text')], [20, plotColor('series-2')], [60, plotColor('series-1')], [120, plotColor('good')], [240, plotColor('series-3')]];
 const IV_LABEL = {D: '1D', W: '1W', M: '1M'};
 function resample(rows, iv) {
   if (iv === 'D') return rows;
@@ -1513,7 +1506,7 @@ function maSeries(rows, n) {
   return out;
 }
 // RSI(14, 와일더). 앞 14봉은 빈 값으로 두어 주가 차트와 봉 위치(논리 번호)를 맞춘다.
-const RSI_N = 14, RSI_HI = 70, RSI_LO = 30, RSI_COLOR = '#c39bff';
+const RSI_N = 14, RSI_HI = 70, RSI_LO = 30, RSI_COLOR = plotColor('series-3');
 function rsiSeries(rows) {
   const out = []; let up = 0, down = 0;
   rows.forEach((r, i) => {
@@ -1529,7 +1522,7 @@ function rsiLegend(id, i) {
   const t = TV[id], p = t.rsiData[i], el = document.getElementById('rsilegend-' + id);
   if (!el) return;
   const v = p && p.value !== undefined ? p.value : null;
-  const tag = v === null ? '' : v >= RSI_HI ? ' <b style="color:#ffbf59">과매수</b>' : v <= RSI_LO ? ' <b style="color:#49a5e8">과매도</b>' : ' <b>중립</b>';
+  const tag = v === null ? '' : v >= RSI_HI ? ' <b style="color:var(--warn)">과매수</b>' : v <= RSI_LO ? ' <b style="color:var(--series-1)">과매도</b>' : ' <b>중립</b>';
   el.innerHTML = '<span>RSI ' + RSI_N + '</span><b style="color:' + RSI_COLOR + '">' + (v === null ? '—' : v.toFixed(1)) + '</b>' + tag;
 }
 function setOn(attr, id, value) {
@@ -1559,7 +1552,7 @@ function render(id) {
       priceFormat: {type: 'custom', minMove: 0.1, formatter: v => v.toFixed(1)},
       autoscaleInfoProvider: () => ({priceRange: {minValue: 0, maxValue: 100}})});
     t.rsiLine.setData(t.rsiData);
-    [[RSI_HI, '#ffbf59', '과매수'], [50, '#5d686d', ''], [RSI_LO, '#49a5e8', '과매도']].forEach(([price, color, title]) =>
+    [[RSI_HI, plotColor('warn'), '과매수'], [50, '#5d686d', ''], [RSI_LO, plotColor('series-1'), '과매도']].forEach(([price, color, title]) =>
       t.rsiLine.createPriceLine({price, color, lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dashed, axisLabelVisible: !!title, title}));
     rsiLegend(id, rows.length - 1);
   }
@@ -1620,9 +1613,9 @@ function drawStock(id) {
   if (!s || !el || !s.ohlcv || !s.ohlcv.length) return;
   const chart = LightweightCharts.createChart(el, {
     autoSize: true,
-    layout: {background: {color: '#1f1f1f'}, textColor: '#b3c0c5', fontSize: 11},
-    grid: {vertLines: {color: '#2a2a2a'}, horzLines: {color: '#2a2a2a'}},
-    rightPriceScale: {borderColor: '#353535'}, timeScale: {borderColor: '#353535', rightOffset: 6},
+    layout: {background: {color: plotColor('surface')}, textColor: plotColor('text-2'), fontSize: 11},
+    grid: {vertLines: {color: plotColor('grid')}, horzLines: {color: plotColor('grid')}},
+    rightPriceScale: {borderColor: plotColor('border')}, timeScale: {borderColor: plotColor('border'), rightOffset: 6},
     crosshair: {mode: LightweightCharts.CrosshairMode.Normal},
     localization: {locale: 'ko-KR', dateFormat: 'yyyy-MM-dd'},
   });
@@ -1632,10 +1625,10 @@ function drawStock(id) {
   if (rsiEl) {
     const rsiChart = LightweightCharts.createChart(rsiEl, {
       autoSize: true,
-      layout: {background: {color: '#1f1f1f'}, textColor: '#b3c0c5', fontSize: 11},
-      grid: {vertLines: {color: '#2a2a2a'}, horzLines: {visible: false}},
-      rightPriceScale: {borderColor: '#353535', minimumWidth: 80, scaleMargins: {top: 0.1, bottom: 0.1}},
-      timeScale: {borderColor: '#353535', rightOffset: 6, visible: false},
+      layout: {background: {color: plotColor('surface')}, textColor: plotColor('text-2'), fontSize: 11},
+      grid: {vertLines: {color: plotColor('grid')}, horzLines: {visible: false}},
+      rightPriceScale: {borderColor: plotColor('border'), minimumWidth: 80, scaleMargins: {top: 0.1, bottom: 0.1}},
+      timeScale: {borderColor: plotColor('border'), rightOffset: 6, visible: false},
       crosshair: {mode: LightweightCharts.CrosshairMode.Normal},
       localization: {locale: 'ko-KR', dateFormat: 'yyyy-MM-dd'},
       handleScale: false, handleScroll: false,
@@ -1664,7 +1657,7 @@ function drawStock(id) {
 }
 
 // 투자자별 매매 동향 (ECharts): 주체 · 누적/일별 · 단위(주/억원) · 기간(1/3/6개월)을 버튼으로 바꾼다.
-const WHO = [['외국인', '#49a5e8'], ['기관', '#ffad33'], ['개인', '#b3c0c5']];
+const WHO = [['외국인', plotColor('series-1')], ['기관', plotColor('series-2')], ['개인', plotColor('text-2')]];
 const FLOW = {};
 const FLOW_DAYS = {'30': 30, '60': 60, '120': 120};  // 거래일
 function flowSet(id, key, value) { const f = FLOW[id]; if (!f) return; f[key] = value; renderFlow(id); }
@@ -1679,23 +1672,23 @@ function renderFlow(id) {
       ? {name: k, type: 'line', data: vals, showSymbol: false, lineStyle: {color, width: 2}, itemStyle: {color}}
       : {name: k, type: 'bar', data: vals, itemStyle: {color}, barMaxWidth: 10};
   });
-  series[0].markLine = {symbol: 'none', silent: true, label: {show: false}, lineStyle: {color: '#81939b', type: 'dashed'}, data: [{yAxis: 0}]};
+  series[0].markLine = {symbol: 'none', silent: true, label: {show: false}, lineStyle: {color: plotColor('text-3'), type: 'dashed'}, data: [{yAxis: 0}]};
   const bal = (d.short_bal || []).slice(start);
   if (bal.some(v => v !== null))
     series.push({name: '공매도 잔고 비중', type: 'line', yAxisIndex: 1, data: bal, connectNulls: true, showSymbol: false,
-      lineStyle: {color: '#c39bff', width: 1.5, type: 'dashed'}, itemStyle: {color: '#c39bff'}});
+      lineStyle: {color: plotColor('series-3'), width: 1.5, type: 'dashed'}, itemStyle: {color: plotColor('series-3')}});
   f.chart.setOption({
     animation: false, backgroundColor: 'transparent',
     grid: {left: 62, right: 50, top: 28, bottom: 28},
-    tooltip: {trigger: 'axis', backgroundColor: '#262626', borderColor: '#353535', textStyle: {color: '#edf2f0', fontSize: 12},
+    tooltip: {trigger: 'axis', backgroundColor: plotColor('surface'), borderColor: plotColor('border'), textStyle: {color: plotColor('text'), fontSize: 12},
       formatter: ps => ps[0].axisValue + '<br>' + ps.map(p => p.marker + p.seriesName + ' <b>' + (p.seriesName === '공매도 잔고 비중'
         ? (p.value === null || p.value === undefined ? '—' : p.value.toFixed(3) + '%') : (p.value > 0 ? '+' : '') + fmt(p.value) + unit) + '</b>').join('<br>')},
-    xAxis: {type: 'category', data: dates, boundaryGap: f.mode === 'day', axisLine: {lineStyle: {color: '#353535'}}, axisTick: {show: false},
-      axisLabel: {color: '#81939b', fontSize: 11, formatter: v => v.slice(5).replace('-', '.')}},
-    yAxis: [{type: 'value', position: 'left', name: '(' + unit + ')', nameTextStyle: {color: '#81939b', fontSize: 11},
-      splitLine: {lineStyle: {color: '#2c2c2c'}}, axisLabel: {color: '#81939b', fontSize: 10, formatter: fmt}},
-      {type: 'value', position: 'right', name: '잔고 비중(%)', nameTextStyle: {color: '#81939b', fontSize: 11}, scale: true,
-      splitLine: {show: false}, axisLabel: {color: '#c39bff', fontSize: 10, formatter: v => v.toFixed(2)}}],
+    xAxis: {type: 'category', data: dates, boundaryGap: f.mode === 'day', axisLine: {lineStyle: {color: plotColor('border')}}, axisTick: {show: false},
+      axisLabel: {color: plotColor('text-3'), fontSize: 11, formatter: v => v.slice(5).replace('-', '.')}},
+    yAxis: [{type: 'value', position: 'left', name: '(' + unit + ')', nameTextStyle: {color: plotColor('text-3'), fontSize: 11},
+      splitLine: {lineStyle: {color: plotColor('grid')}}, axisLabel: {color: plotColor('text-3'), fontSize: 10, formatter: fmt}},
+      {type: 'value', position: 'right', name: '잔고 비중(%)', nameTextStyle: {color: plotColor('text-3'), fontSize: 11}, scale: true,
+      splitLine: {show: false}, axisLabel: {color: plotColor('series-3'), fontSize: 10, formatter: v => v.toFixed(2)}}],
     series,
   }, true);
   document.querySelectorAll('[data-flow-for="' + id + '"]').forEach(b => b.classList.toggle('on', f[b.dataset.k] === b.dataset.v));
@@ -1719,13 +1712,13 @@ function fcfMode(id, m) {
     animation: false, backgroundColor: 'transparent',
     grid: {left: 8, right: 64, top: 16, bottom: 24},
     tooltip: {trigger: 'axis', axisPointer: {type: 'shadow', shadowStyle: {color: 'rgba(130,145,160,0.12)'}},
-      backgroundColor: '#262626', borderColor: '#353535', textStyle: {color: '#edf2f0', fontSize: 12},
+      backgroundColor: plotColor('surface'), borderColor: plotColor('border'), textStyle: {color: plotColor('text'), fontSize: 12},
       formatter: ps => ps[0].name + '<br>FCF <b>' + krw(ps[0].value, 1) + '원</b>'},
-    xAxis: {type: 'category', data: pts.map(p => p[0]), axisLine: {lineStyle: {color: '#353535'}}, axisTick: {show: false},
-      axisLabel: {color: '#81939b', fontSize: 10}},
-    yAxis: {type: 'value', position: 'right', splitLine: {lineStyle: {color: '#2c2c2c'}}, axisLabel: {color: '#81939b', fontSize: 10, formatter: v => krw(v, 0)}},
-    series: [{type: 'bar', barMaxWidth: m === 'annual' ? 60 : 18, data: pts.map(p => ({value: p[1], itemStyle: {color: p[1] >= 0 ? '#8fa3bd' : '#ff7770', borderRadius: p[1] >= 0 ? [2, 2, 0, 0] : [0, 0, 2, 2]}})),
-      markLine: {symbol: 'none', silent: true, label: {show: false}, lineStyle: {color: '#81939b', type: 'solid', width: 1}, data: [{yAxis: 0}]}}],
+    xAxis: {type: 'category', data: pts.map(p => p[0]), axisLine: {lineStyle: {color: plotColor('border')}}, axisTick: {show: false},
+      axisLabel: {color: plotColor('text-3'), fontSize: 10}},
+    yAxis: {type: 'value', position: 'right', splitLine: {lineStyle: {color: plotColor('grid')}}, axisLabel: {color: plotColor('text-3'), fontSize: 10, formatter: v => krw(v, 0)}},
+    series: [{type: 'bar', barMaxWidth: m === 'annual' ? 60 : 18, data: pts.map(p => ({value: p[1], itemStyle: {color: p[1] >= 0 ? plotColor('bar') : plotColor('bad'), borderRadius: p[1] >= 0 ? [2, 2, 0, 0] : [0, 0, 2, 2]}})),
+      markLine: {symbol: 'none', silent: true, label: {show: false}, lineStyle: {color: plotColor('text-3'), type: 'solid', width: 1}, data: [{yAxis: 0}]}}],
   }, true);
   document.querySelectorAll('[data-fcf-for="' + id + '"]').forEach(b => b.classList.toggle('on', b.dataset.m === m));
 }
@@ -1755,7 +1748,7 @@ def render_flow(f, i):
             for v, label in options) + "</div>"
 
     legend = "".join(f'<span><i style="background:{color}"></i>{name}</span>'
-                     for name, color in [("외국인", "#49a5e8"), ("기관", "#ffad33"), ("개인", "#b3c0c5")])
+                     for name, color in [("외국인", "var(--series-1)"), ("기관", "var(--series-2)"), ("개인", "var(--text-2)")])
     legend += '<span><i class="idash"></i>공매도 잔고 비중 (우)</span>'
     left = ('<div class="qleft"><div class="ilegend">' + legend + '</div><div class="ictrl">'
             + group("who", [("all", "전체"), ("외국인", "외국인"), ("기관", "기관"), ("개인", "개인")])
@@ -1854,7 +1847,8 @@ def render_reports(c):
             f'<span>한경 컨센서스 · 최근 1년 기업 리포트</span></div>')
     r = c.get("reports")
     if not r:
-        return f'<div class="card">{head}<p class="note">{esc(c.get("reports_note") or "리포트가 없습니다.")}</p></div>'
+        message = c.get("reports_note") or c.get("error") or "리포트가 없습니다."
+        return f'<div class="card">{head}<p class="note">{esc(message)}</p></div>'
     note = '<p class="note">리포트 목록을 받지 못해 마지막 저장본을 보여 줍니다.</p>' if r["cached"] else ""
 
     def up(v):
@@ -1923,7 +1917,7 @@ def render_company(c):
                         for v, label in [("D", "일"), ("W", "주"), ("M", "월")])
     mas = "".join(f'<button class="mabtn on" data-ma-for="{i}" data-n="{n}" onclick="tvMA(\'{i}\', {n})">'
                   f'<i style="background:{color}"></i>{n}</button>'
-                  for n, color in [(5, "#edf2f0"), (20, "#ffad33"), (60, "#49a5e8"), (120, "#62d59a"), (240, "#c39bff")])
+                  for n, color in [(5, "var(--text)"), (20, "var(--series-2)"), (60, "var(--series-1)"), (120, "var(--good)"), (240, "var(--series-3)")])
     chart_card = (
         f'<div class="card tvcard"><div class="tvtitle"><b>시장 주가 추이</b><span>{c["ticker"]} · '
         f'<a href="https://www.tradingview.com/chart/?symbol=KRX:{c["ticker"]}" target="_blank" rel="noopener noreferrer">TradingView</a></span></div>'
@@ -1943,7 +1937,7 @@ def render_company(c):
         f'{note}{chart_card}{flow_card}{fcf_card}')
 
 
-EXPORT_MONTHS = 36
+EXPORT_MONTHS = 24
 
 EXPORT_JS = r"""
 const EXPORTS = __DATA__;
@@ -1958,27 +1952,27 @@ function drawExports() {
   exportChart.setOption({
     animation: false, backgroundColor: 'transparent',
     grid: {left: 52, right: 56, top: 30, bottom: 28},
-    legend: {top: 0, right: 0, textStyle: {color: '#b3c0c5', fontSize: 12}, itemWidth: 12, itemHeight: 10,
+    legend: {top: 0, right: 0, textStyle: {color: plotColor('text-2'), fontSize: 12}, itemWidth: 12, itemHeight: 10,
              data: ['반도체 (집적회로)', '그 밖', '반도체 비중']},
-    tooltip: {trigger: 'axis', backgroundColor: '#262626', borderColor: '#353535', textStyle: {color: '#edf2f0', fontSize: 12},
+    tooltip: {trigger: 'axis', backgroundColor: plotColor('surface'), borderColor: plotColor('border'), textStyle: {color: plotColor('text'), fontSize: 12},
       formatter: ps => ps[0].axisValue + '<br>' + ps.map(p => p.marker + p.seriesName + ' <b>' +
         (p.seriesName === '반도체 비중' ? p.value.toFixed(1) + '%' : Math.round(p.value).toLocaleString() + '억$') + '</b>').join('<br>')
         + '<br>합계 <b>' + Math.round(d.total[ps[0].dataIndex]).toLocaleString() + '억$</b>'},
-    xAxis: {type: 'category', data: d.months, axisLine: {lineStyle: {color: '#353535'}}, axisTick: {show: false},
-      axisLabel: {color: '#81939b', fontSize: 11, interval: 0, formatter: m => m.endsWith('-01') ? m.slice(0, 4) + '년' : (m.endsWith('-07') ? '7월' : '')}},
+    xAxis: {type: 'category', data: d.months, axisLine: {lineStyle: {color: plotColor('border')}}, axisTick: {show: false},
+      axisLabel: {color: plotColor('text-3'), fontSize: 11, interval: 0, formatter: m => m.endsWith('-01') ? m.slice(0, 4) + '년' : (m.endsWith('-07') ? '7월' : '')}},
     yAxis: [
-      {type: 'value', splitLine: {lineStyle: {color: '#2c2c2c'}}, axisLabel: {color: '#81939b', fontSize: 10, formatter: v => v.toLocaleString()}},
+      {type: 'value', splitLine: {lineStyle: {color: plotColor('grid')}}, axisLabel: {color: plotColor('text-3'), fontSize: 10, formatter: v => v.toLocaleString()}},
       {type: 'value', position: 'right', min: 0, max: 60, splitLine: {show: false},
-       axisLabel: {color: '#ffad33', fontSize: 10, formatter: v => v + '%'}},
+       axisLabel: {color: plotColor('series-2'), fontSize: 10, formatter: v => v + '%'}},
     ],
     series: [
-      {name: '반도체 (집적회로)', type: 'bar', stack: 'x', data: d.semis, barWidth: '62%', itemStyle: {color: '#49a5e8'}},
-      {name: '그 밖', type: 'bar', stack: 'x', data: d.others, itemStyle: {color: '#3a3a3a', borderRadius: [3, 3, 0, 0]},
+      {name: '반도체 (집적회로)', type: 'bar', stack: 'x', data: d.semis, barWidth: '62%', itemStyle: {color: plotColor('series-1')}},
+      {name: '그 밖', type: 'bar', stack: 'x', data: d.others, itemStyle: {color: plotColor('surface-2'), borderRadius: [3, 3, 0, 0]},
        markPoint: {symbol: 'roundRect', symbolSize: [64, 20], symbolOffset: [0, -16],
          data: [{coord: [last, d.total[last]], value: Math.round(d.total[last]).toLocaleString() + '억$'}],
-         itemStyle: {color: '#ffad33'}, label: {color: '#091018', fontWeight: 'bold', fontSize: 11}}},
+         itemStyle: {color: plotColor('series-2')}, label: {color: plotColor('value-label'), fontWeight: 'bold', fontSize: 11}}},
       {name: '반도체 비중', type: 'line', yAxisIndex: 1, data: d.share, showSymbol: false, smooth: true,
-       lineStyle: {color: '#ffad33', width: 2}, itemStyle: {color: '#ffad33'}},
+       lineStyle: {color: plotColor('series-2'), width: 2}, itemStyle: {color: plotColor('series-2')}},
     ],
   });
 }
@@ -2059,7 +2053,7 @@ def render_exports(data, note=None):
                       f'품목별 자료는 매월 15일경 나오면 아래에 반영됩니다</div></div>')
     return (f'{flash_card}<div class="card">{head}<div id="export-chart" class="xchart"></div>'
             f'<div class="legend">※ 관세청 품목별 수출입실적 (공공데이터포털) · FOB 달러 · 매월 15일경 전월분 발표 · '
-            f'반도체 = 집적회로(HS 8542) 전체 · SSD는 관세청 분류상 저장매체(HS 8523)라 아래 품목에서 따로 봅니다</div></div>'
+            f'반도체 = 집적회로(HS 8542) 전체 · SSD는 관세청 분류상 저장매체(HS 8523)라 아래 품목에서 따로 봅니다.<br>DRAM 수출액은 가격과 수량이 함께 반영된 전국 통관 금액입니다. 칩 규격별 시장 현물가는 <a href="https://www.dramexchange.com/" target="_blank" rel="noopener noreferrer">TrendForce DRAMeXchange</a>에서 확인할 수 있습니다.</div></div>'
             + cosmetics.render(data["products"], namespace="semiconductors", title="반도체 품목별 수출"))
 
 
@@ -2182,22 +2176,8 @@ def render_events(ev):
             f'옵션 만기·지수 변경·관세청 수출·보고서 기한은 규칙으로 계산 · 삼성전자 잠정실적과 TSMC 월매출은 날짜 추정 · 휴장일 표는 해마다 갱신 필요</div></div>')
 
 
-def render_upcoming(ev, days=7, limit=5):
-    """매크로 탭 한 줄: 앞으로 7일 안의 ★★ 이상 일정."""
-    if not ev:
-        return ""
-    today = datetime.fromisoformat(ev["today"] + "T00:00:00+09:00")
-    items = [e for e in ev["events"] if e["stars"] >= 2 and today <= datetime.fromisoformat(e["at"]) < today + pd.Timedelta(days=days)][:limit]
-    if not items:
-        return ""
-    parts = []
-    for e in items:
-        day, clock = _ev_when(e)
-        parts.append(f'<span>{day[:5]} {clock if e["time_known"] else ""} <b>{esc(e["title"])}</b></span>')
-    return f'<div class="upnext"><a href="#" onclick="document.querySelector(\'[data-t=t7]\').click();return false">다가오는 일정</a>{" · ".join(parts)}</div>'
-
-
 def render_html(ctx):
+    sidebar, datasets = dashboard_layout.navigation(ctx["companies"])
     v = ctx["verdicts"]
     groups = CFG["groups"]
     status = " · ".join(f'{g["name"]} <b style="color:{TONE[v[g["id"]]["key"]]}">{v[g["id"]]["label"]}</b>' for g in groups)
@@ -2207,7 +2187,8 @@ def render_html(ctx):
         c = gv["counts"]
         gcards += (f'<div class="gcard" style="border-top-color:{TONE[gv["key"]]}"><small>{GROUP_NUM[n]} {g["name"]}</small>'
                    f'<div style="color:{TONE[gv["key"]]}">{gv["label"]}</div>'
-                   f'<small>{g["labels"]["pos"]} {c["pos"]} · 중립 {c["neu"]} · {g["labels"]["neg"]} {c["neg"]}</small></div>')
+                   f'<small>{g["labels"]["pos"]} {c["pos"]} · 중립 {c["neu"]} · {g["labels"]["neg"]} {c["neg"]}</small>'
+                   + local_views.evidence(ctx["rows"], g["id"]) + '</div>')
 
     sections = ""
     for n, g in enumerate(groups):
@@ -2219,17 +2200,21 @@ def render_html(ctx):
                      f'<small>{g["labels"]["pos"]} {c["pos"]} · 중립 {c["neu"]} · {g["labels"]["neg"]} {c["neg"]}</small></div>{rows}')
 
     return f"""<!doctype html><html lang="ko"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><title>국장 매크로 대시보드</title><style>{CSS}{cosmetics.CSS}</style></head>
-<body><div class="wrap">
-<h1>국장 매크로 대시보드</h1>
-<div class="meta">데이터 기준 {ctx["asof"]:%Y-%m-%d} · 생성 {ctx["generated"]:%Y-%m-%d %H:%M} · 판정 기준: indicators.json</div>
-<div class="tabs"><button class="on" data-t="t1">매크로</button>{"".join(f'<button data-t="s-{c["id"]}">{esc(c["tab"])}</button>' for c in ctx["companies"])}<button data-t="t3">삼전닉스 뉴스</button><button data-t="t6">증권사 리포트</button><button data-t="t7">일정</button><button data-t="t4">신용잔고</button><button data-t="t5">수출</button><button data-t="cosmetics">화장품 수출</button><button data-t="t2">시장 흐름</button></div>
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>국장 매크로 대시보드</title><style>{dashboard_theme.CSS}{CSS}{cosmetics.CSS}{local_views.CSS}{dashboard_layout.CSS}{trend_charts.CSS}</style>{dashboard_theme.BOOT}</head>
+<body><div class="dashboard-shell">
+{sidebar}
+<main class="dashboard-main">
+{dashboard_layout.HEADER}
+<div class="meta">시장 데이터 기준 {ctx["asof"]:%Y-%m-%d} · 마지막 화면 갱신 성공 {ctx["generated"]:%Y-%m-%d %H:%M} KST · <span id="refresh-state" data-at="{ctx["generated"].isoformat()}">로컬 생성본</span></div>
+{local_views.STATUS_SCRIPT}
+<div class="workspace-grid">
+{datasets}
+<div class="workspace-detail">
 
 <div class="tab on" id="t1">
 <div class="card status">
   <div><b class="big">오늘의 상태</b> · {status}</div>
   <div class="headline">{esc(ctx["sentence"])}</div>
-  {ctx["upcoming_html"]}
   <div class="kpis">{ctx["kpis"]}</div>
   <div class="gcards">{gcards}</div>
   <div class="fresh">{ctx["fresh"]}</div>
@@ -2243,14 +2228,12 @@ def render_html(ctx):
 </div>
 </div>
 
-{"".join(f'<div class="tab" id="s-{c["id"]}">{render_company(c)}</div>' for c in ctx["companies"])}
+{"".join(f'<div class="tab" id="s-{c["id"]}">{render_company(c)}{ctx["apr_comparison"] if c["id"] == "apr" else ""}</div>' for c in ctx["companies"])}
 
 <div class="tab" id="t7">
 {ctx["events_html"]}
 </div>
-<div class="tab" id="t6">
-{"".join(render_reports(c) for c in ctx["companies"] if not c.get("error"))}
-</div>
+{"".join(f'<div class="tab" id="r-{esc(c["id"])}">{render_reports(c)}</div>' for c in ctx["companies"])}
 <div class="tab" id="t3">
 <div class="card">
   <div class="sec-head"><span class="sec-title">삼전닉스 뉴스</span><span>최근 7일 · 주요 언론사만 · 같은 내용은 하나로 묶음 (Google 뉴스)</span></div>
@@ -2260,6 +2243,10 @@ def render_html(ctx):
 
 <div class="tab" id="t4">
 {ctx["credit_html"]}
+</div>
+
+<div class="tab" id="memory">
+{(ROOT / "dram_spot_snapshot.html").read_text(encoding="utf-8").replace("<!-- memory-chart -->", trend_charts.memory_chart())}
 </div>
 
 <div class="tab" id="t5">
@@ -2283,6 +2270,9 @@ def render_html(ctx):
 </div>
 
 </div>
+</div>
+</main>
+</div>
 <script src="{ECHARTS_URL}"></script>
 <script src="{LWC_URL}"></script>
 <script>{ctx["credit_js"]}</script>
@@ -2290,7 +2280,7 @@ def render_html(ctx):
 <script>{ctx["semiconductor_js"]}</script>
 <script>{ctx["cosmetics_js"]}</script>
 <script>{ctx["stock_js"]}</script>
-<script>
+{dashboard_layout.SCRIPT}<script>
 function chartUnavailable(id) {{
   const parent = document.getElementById(id);
   if (!parent || parent.querySelector('.chart-error')) return;
@@ -2298,10 +2288,12 @@ function chartUnavailable(id) {{
   msg.textContent = '차트 라이브러리를 불러오지 못했습니다. 인터넷 연결을 확인한 뒤 새로고침하세요. 저장된 수치는 계속 확인할 수 있습니다.';
   parent.prepend(msg);
 }}
-document.querySelectorAll('.tabs button').forEach(b=>b.onclick=()=>{{
-  document.querySelectorAll('.tabs button,.tab').forEach(e=>e.classList.remove('on'));
+document.querySelectorAll('.dataset-list button').forEach(b=>b.onclick=()=>{{
+  document.querySelectorAll('.dataset-list button,.tab').forEach(e=>e.classList.remove('on'));
   b.classList.add('on');document.getElementById(b.dataset.t).classList.add('on');
+  selectWorkspaceView(b);
   if (b.dataset.t === 't4' && typeof drawCredit === 'function') {{ drawCredit(); creditCharts.forEach(c => c.resize()); }}
+  if (b.dataset.t === 'memory' && typeof drawMemory === 'function') drawMemory();
   if (b.dataset.t === 't5' && typeof drawExports === 'function') {{ drawExports(); exportChart && exportChart.resize(); }}
   if (b.dataset.t === 't5' && typeof drawSemiconductors === 'function') {{ drawSemiconductors(); }}
   if (b.dataset.t === 'cosmetics' && typeof drawCosmetics === 'function') {{ drawCosmetics(); }}
@@ -2416,7 +2408,7 @@ document.querySelectorAll('.tabs button').forEach(b=>b.onclick=()=>{{
   apply();
 }})();
 </script>
-</body></html>"""
+{dashboard_theme.SWITCH}</body></html>"""
 
 
 # ---------------------------------------------------------------- 실행
@@ -2523,17 +2515,18 @@ def main():
         credit = {"panels": [], "notes": ["신용잔고 데이터를 받지 못했습니다."]}
         print(f"  ! 신용잔고 탭: {e.__class__.__name__}")
     try:
-        credit["deposit"] = deposit_panel(next(i["calc"] for i in inds if i["id"] == "deposit"))
+        credit["deposit"] = deposit_panel(next(i["calc"] for i in inds if i["id"] == "deposit"), kospi)
     except Exception as e:
         credit["deposit"] = None
         print(f"  ! 투자자예탁금: {e.__class__.__name__}")
     ctx = {
+        "apr_comparison": local_views.apr_comparison(cosmetics_data),
         "rows": rows, "verdicts": verdicts, "sentence": summary_sentence(verdicts),
         "kpis": " · ".join(kp) + (f'<div class="flow">수급·자금 · {" · ".join(flow)}</div>' if flow else ""), "fresh": fresh, "asof": kospi.index[-1], "generated": datetime.now(ZoneInfo(KST)),
         "uni_n": uni.shape[1],
         "period_html": render_period(period), "sector_html": sector_html,
         "news_html": render_news(news_ctx),
-        "events_html": render_events(ev), "upcoming_html": render_upcoming(ev),
+        "events_html": render_events(ev),
         "credit_html": render_credit(credit),
         "export_html": render_exports(exports, export_note),
         "semiconductor_js": cosmetics.script(exports["products"], namespace="semiconductors") if exports else "",
@@ -2542,7 +2535,7 @@ def main():
         "companies": companies,
         "stock_js": STOCK_JS.replace("__DATA__", json.dumps(companies, ensure_ascii=False, allow_nan=False).replace("</", r"<\/")) if companies else "",
         "export_js": EXPORT_JS.replace("__DATA__", json.dumps(exports, ensure_ascii=False, default=float, allow_nan=False).replace("</", r"<\/")) if exports else "",
-        "credit_js": CREDIT_JS.replace("__DATA__", json.dumps(credit, ensure_ascii=False, allow_nan=False).replace("</", r"<\/")),
+        "credit_js": trend_charts.SCRIPT.replace("__DATA__", json.dumps(credit, ensure_ascii=False, allow_nan=False).replace("</", r"<\/")),
     }
     target = OUT / "dashboard.html"
     temporary = OUT / f".dashboard-{os.getpid()}.tmp"
@@ -2553,4 +2546,11 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    OUT.mkdir(exist_ok=True)
+    local_views.write_state(OUT, "running", datetime.now(ZoneInfo(KST)))
+    try:
+        main()
+    except BaseException:
+        local_views.write_state(OUT, "failed", datetime.now(ZoneInfo(KST)))
+        raise
+    local_views.write_state(OUT, "success", datetime.now(ZoneInfo(KST)))

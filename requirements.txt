@@ -2,3 +2,5 @@ pandas>=2.2
 numpy>=2.0
 yfinance>=0.2.54
 pykrx>=1.2.9
+beautifulsoup4>=4.12
+pypdf>=5,<8
