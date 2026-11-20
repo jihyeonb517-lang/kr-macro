@@ -8,7 +8,7 @@ from dashboard_theme import appearance_menu
 
 
 ICONS = {
-    "market": "↗", "funding": "⇄", "trade": "▥", "memory": "▣", "companies": "▤",
+    "market": "↗", "sectors": "▦", "funding": "⇄", "trade": "▥", "memory": "▣", "companies": "▤",
     "research": "≡", "reports": "▱", "calendar": "▦", "appearance": "◐", "collapse": "«", "expand": "»",
 }
 ICON_FILES = ((".svg", "image/svg+xml"), (".png", "image/png"), (".webp", "image/webp"))
@@ -40,11 +40,13 @@ def toolbar_icon(name):
     return f'<span class="workspace-icon" data-icon="{name}" aria-hidden="true">{ICONS[name]}</span>'
 
 
-def navigation(companies):
+def navigation(companies, company_search=""):
     groups = [
         ("market", "시장·매크로", [
             ("t1", "장세 판단", "주요 매크로 지표와 시장 상태"),
-            ("t2", "시장 흐름", "자산별 수익률과 섹터 흐름"),
+        ]),
+        ("sectors", "섹터 히트맵", [
+            ("sector-heatmap", "섹터 히트맵", ""),
         ]),
         ("funding", "수급·자금", [
             ("t4", "신용잔고·예탁금", "시장별 신용잔고와 투자자예탁금"),
@@ -59,14 +61,14 @@ def navigation(companies):
         ("companies", "기업 분석", [
             (f's-{company["id"]}', company["tab"], "")
             for company in companies
-        ]),
+        ] + ([("s-catalog", "종목 상세", "검색 결과")] if company_search else [])),
         ("research", "뉴스", [
             ("t3", "삼전닉스 뉴스", "삼성전자·SK하이닉스 주요 기사"),
         ]),
         ("reports", "증권사 리포트", [
             (f'r-{company["id"]}', company["name"], "투자의견·목표주가·리포트")
             for company in companies
-        ]),
+        ] + ([("r-catalog", "종목 리포트", "검색 결과")] if company_search else [])),
         ("calendar", "경제 일정", [
             ("t7", "경제 일정", "주요 지표 발표와 기업 일정"),
         ]),
@@ -104,6 +106,7 @@ def navigation(companies):
            + "".join(group_buttons) + '</nav>' + appearance_menu(toolbar_icon("appearance")) + '</aside>')
     datasets = ('<aside class="dataset-pane" aria-labelledby="dataset-heading">'
                 '<h2 id="dataset-heading">시장·매크로</h2>'
+                + company_search +
                 '<nav class="dataset-list" aria-label="분야별 데이터">'
                 + "".join(dataset_buttons) + '</nav></aside>')
     return nav, datasets
@@ -182,6 +185,8 @@ body{font-size:14px}
 .dashboard-main>.meta{margin-top:10px}
 .workspace-grid{display:grid;grid-template-columns:minmax(184px,220px) minmax(0,1fr);gap:20px;
   align-items:start;margin-top:20px}
+.workspace-grid:has(> .workspace-detail > #t1.on){grid-template-columns:minmax(0,1fr)}
+.workspace-grid:has(> .workspace-detail > #t1.on)>.dataset-pane{display:none}
 .dataset-pane{min-width:0;position:sticky;top:18px;align-self:start;
   padding:15px;background:var(--surface);border:1px solid var(--border);border-radius:14px}
 .dataset-pane h2{margin:1px 6px 12px;font-size:14px;color:var(--text);font-weight:700}
@@ -225,6 +230,11 @@ body{font-size:14px}
   .workspace-grid{display:block}
   .dataset-pane{position:static;margin-bottom:14px}
   .dataset-list{grid-template-columns:repeat(auto-fit,minmax(124px,1fr))}
+}
+@media (min-width:731px){
+  .workspace-grid:has(> .dataset-pane #company-search:not([hidden])){
+    grid-template-columns:clamp(220px,23vw,276px) minmax(0,1fr)
+  }
 }
 @media (max-width:460px){
   .workspace-detail .gcards{grid-template-columns:1fr}
@@ -294,6 +304,9 @@ function selectWorkspaceView(active) {
   workspaceTitle.textContent = title;
   workspaceSection.textContent = label;
   datasetHeading.textContent = label;
+  const companySearch = document.getElementById('company-search');
+  if (companySearch) companySearch.hidden = group !== 'companies' && group !== 'reports';
+  window.setCompanyDirectoryGroup?.(group);
 }
 
 const viewForGroup = new Map(workspaceButtons.map(button => [button.dataset.group, button.dataset.firstView]));

@@ -4,6 +4,7 @@ indicators.json을 읽어 데이터를 받고, output/ 폴더에 HTML 대시보�
 실행: python build.py
 """
 import contextlib
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import html
 import io
@@ -31,6 +32,8 @@ import news
 import cosmetics
 import dashboard_theme
 import dashboard_layout
+import company_catalog
+import sector_map
 import trend_charts
 import local_views
 
@@ -72,13 +75,6 @@ requests.adapters.HTTPAdapter.send = _http_send_with_timeout
 class MissingKey(Exception):
     """A source needs a key that .env does not have yet; shown as a setup note, not an error."""
 
-# 구간 색. IV Terminal 팔레트(--bad, --accent, --warn, --series-1, --good)에 맞춘다.
-COLORS = {
-    "red": "#ff7770", "orange": "#ffad33", "yellow": "#e8d36a", "gray": "#5d686d",
-    "blue": "#49a5e8", "green": "#62d59a", "dkgreen": "#2fb876",
-}
-TONE = {"pos": "var(--good)", "neu": "var(--text-2)", "neg": "var(--warn)"}
-GROUP_NUM = "①②③④⑤⑥"
 KST = "Asia/Seoul"
 
 
@@ -261,6 +257,14 @@ def stock_ohlcv(symbol, start="2016-01-01"):
     if isinstance(d.columns, pd.MultiIndex):
         d.columns = d.columns.get_level_values(0)
     d.index = pd.to_datetime(d.index).tz_localize(None) if d.index.tz is not None else pd.to_datetime(d.index)
+    d = validate_stock_prices(d)
+    d.attrs["cached"] = cached
+    OUT.mkdir(exist_ok=True)
+    d.to_csv(cache)
+    return d
+
+
+def validate_stock_prices(d):
     d = d[["Open", "High", "Low", "Close", "Volume"]].apply(pd.to_numeric, errors="coerce")
     valid = (np.isfinite(d).all(axis=1) & (d[["Open", "High", "Low", "Close"]] > 0).all(axis=1)
              & (d["Volume"] >= 0) & (d["High"] >= d[["Open", "Low", "Close"]].max(axis=1))
@@ -269,11 +273,8 @@ def stock_ohlcv(symbol, start="2016-01-01"):
     d = d.loc[valid]
     d = d[~d.index.duplicated(keep="last")].sort_index()
     d.attrs["rejected_rows"] = rejected
-    d.attrs["cached"] = cached
     if len(d) < 2:
         raise ValueError("검증된 시세가 2거래일 미만입니다")
-    OUT.mkdir(exist_ok=True)
-    d.to_csv(cache)
     return d
 
 
@@ -360,6 +361,22 @@ def rsi_zone(v):
     return "중립", ""
 
 
+def company_price_fields(px):
+    close = px["Close"]
+    last_d = close.index[-1]
+    year = px[px.index > last_d - pd.Timedelta(weeks=52)]
+    oscillation = rsi(close)
+    return {
+        "price": float(close.iloc[-1]), "prev": float(close.iloc[-2]), "date": last_d.strftime("%Y-%m-%d"),
+        "rsi": float(oscillation.iloc[-1]) if len(oscillation) else None,
+        "rsi_prev": float(oscillation.iloc[-6]) if len(oscillation) >= 6 else None,
+        "hi52": float(year["High"].max()), "hi52_date": year["High"].idxmax().strftime("%Y-%m-%d"),
+        "lo52": float(year["Low"].min()), "lo52_date": year["Low"].idxmin().strftime("%Y-%m-%d"),
+        "ohlcv": [[d.strftime("%Y-%m-%d"), round(opn), round(high), round(low), round(cl), int(vol)]
+                  for d, opn, high, low, cl, vol in px[company_catalog.PRICE_COLUMNS].itertuples(name=None)],
+    }
+
+
 def company_tabs():
     """삼성전자·하이닉스 탭 데이터: 기업 개요 + 차트용 일별 시세."""
     out = []
@@ -370,8 +387,6 @@ def company_tabs():
             out.append({**c, "error": f"시세를 받지 못했습니다 ({e.__class__.__name__})"})
             continue
         close = px["Close"]
-        last_d = close.index[-1]
-        year = px[px.index > last_d - pd.Timedelta(weeks=52)]
         try:
             flow, note = krx_flow(c["ticker"]), None
         except MissingKey as e:
@@ -398,12 +413,7 @@ def company_tabs():
             note = (note + " · " if note else "") + "시세 수신 실패로 마지막 저장본 사용 · 종가 기준일 확인"
         out.append({
             **c, "flow": flow, "note": note, "fcf": fcf, "fcf_note": fcf_note, "reports": reports, "reports_note": reports_note,
-            "price": float(close.iloc[-1]), "prev": float(close.iloc[-2]), "date": last_d.strftime("%Y-%m-%d"),
-            "rsi": float(rsi(close).iloc[-1]), "rsi_prev": float(rsi(close).iloc[-6]),
-            "hi52": float(year["High"].max()), "hi52_date": year["High"].idxmax().strftime("%Y-%m-%d"),
-            "lo52": float(year["Low"].min()), "lo52_date": year["Low"].idxmin().strftime("%Y-%m-%d"),
-            "ohlcv":[[d.strftime("%Y-%m-%d"), round(r.Open), round(r.High), round(r.Low), round(r.Close), int(r.Volume)]
-                      for d, r in px.iterrows()],
+            **company_price_fields(px),
         })
     return out
 
@@ -569,9 +579,9 @@ def analyst_reports(ticker):
             rows.append({"date": text[0], "title": title, "target": int(target) if target and int(target) > 0 else None,
                          "opinion": text[3], "author": text[4], "broker": text[5],
                          "url": "https://consensus.hankyung.com" + link.group(1)})
-        if not rows:
-            raise ValueError("한경 컨센서스 목록이 비어 있습니다")
-        df = pd.DataFrame(rows)
+        if not rows and not re.search(r">\s*결과가 없습니다\.?\s*<", page):
+            raise ValueError("한경 컨센서스 응답의 리포트 목록을 확인할 수 없습니다")
+        df = pd.DataFrame(rows, columns=["date", "title", "target", "opinion", "author", "broker", "url"])
         df.to_csv(cache, index=False)
         df.attrs["cached"] = False
     except Exception:
@@ -586,7 +596,11 @@ def analyst_reports(ticker):
 def report_summary(ticker, price):
     """증권사별 최신 리포트 + 최근 90일 목표가 컨센서스."""
     df = analyst_reports(ticker)
-    df["view"] = df["opinion"].fillna("").map(_opinion)
+    if df.empty:
+        return None
+    text_columns = ["title", "opinion", "author", "broker"]
+    df[text_columns] = df[text_columns].fillna("")
+    df["view"] = df["opinion"].map(_opinion)
     rated = df[df["target"].notna()]
     latest = []
     for broker, g in rated.groupby("broker", sort=False):
@@ -598,7 +612,8 @@ def report_summary(ticker, price):
             "date": last["date"].strftime("%Y-%m-%d"), "broker": broker, "author": last["author"],
             "opinion": last["opinion"], "view": last["view"], "target": int(last["target"]),
             "prev": prev_target if len(g) > 1 else None, "repeat": len(g) > 1,
-            "upside": (int(last["target"]) / price - 1) * 100, "title": last["title"], "url": last["url"],
+            "upside": (int(last["target"]) / price - 1) * 100 if price else None,
+            "title": last["title"], "url": last["url"],
             "fresh": (TODAY - last["date"]).days <= REPORT_DAYS,
         })
     fresh = [r for r in latest if r["fresh"]]
@@ -820,6 +835,51 @@ def marker_pos(ind, v):
     return (i + f) / len(zs) * 100
 
 
+def market_history(ind, series):
+    daily = ind["freq"] == "daily"
+    limit = 60 if daily else 24
+    if daily:
+        recent = series.tail(limit)
+    else:
+        end = series.index[-1]
+        recent = series.loc[series.index > end - pd.DateOffset(months=limit)]
+    offset = len(series) - len(recent)
+    previous = ind["zones"][zone_of(ind, series.iloc[offset - 1])]["label"] if offset else None
+    points = []
+    for date, value in recent.items():
+        label = ind["zones"][zone_of(ind, value)]["label"]
+        changed_from = previous if previous != label else None
+        points.append([market_observation_date(ind, date), float(value), label, changed_from])
+        previous = label
+    current_zone = zone_of(ind, recent.iloc[-1])
+    zones = ind["zones"]
+    lower = zones[current_zone - 1]["max"] if current_zone else None
+    upper = zones[current_zone]["max"]
+    return {
+        "points": points,
+        "boundaries": [limit for limit in (lower, upper) if limit is not None],
+        "units": ind["unit"],
+        "decimals": ind["decimals"],
+        "period": "최근 60거래일" if daily else "최근 24개월",
+    }
+
+
+def render_market_history(ind, history):
+    if not history or len(history["points"]) < 2:
+        return '<p class="market-trend-unavailable">추세를 그릴 연속 관측값이 부족합니다.</p>'
+
+    payload = json.dumps(history, ensure_ascii=False, allow_nan=False, separators=(",", ":")).replace("<", "\\u003c")
+    caption = f'{history["period"]} · 관측 {len(history["points"])}개'
+    title = esc(ind["name"], quote=True)
+    return (
+        '<figure class="market-trend">'
+        f'<figcaption><b>{esc(caption)}</b><span>실선 관측값 · 점선 판정 경계 · 점 판정 변경</span></figcaption>'
+        f'<div class="market-trend-chart" role="img" aria-label="{title} 추세와 판정 경계"></div>'
+        f'<script type="application/json" class="market-trend-data">{payload}</script>'
+        '</figure>'
+    )
+
+
 def analyze(ind, s, kospi):
     source_note = s.attrs.get("source_note")
     s = pd.to_numeric(s, errors="coerce").replace([np.inf, -np.inf], np.nan).dropna().sort_index()
@@ -829,10 +889,14 @@ def analyze(ind, s, kospi):
     last = s.index[-1]
     v = s.iloc[-1]
     if ind["freq"] == "daily":
-        prev = s[: last - pd.Timedelta(days=7)]
-        pv = prev.iloc[-1] if len(prev) else np.nan
+        benchmark = s.loc[:last - pd.Timedelta(days=7)].tail(1)
     else:
-        pv = s.get(last - pd.DateOffset(months=1), np.nan)
+        benchmark = s.reindex([last - pd.DateOffset(months=1)]).dropna()
+    pv = benchmark.iloc[-1] if len(benchmark) else np.nan
+    prev_date = benchmark.index[-1] if len(benchmark) else None
+    previous = None
+    if len(s) > 1:
+        previous = {"date": s.index[-2], "zone": ind["zones"][zone_of(ind, s.iloc[-2])]}
     since = ind["pct_since"]
     hist = s[s.index >= last - pd.DateOffset(years=1)] if since == "1y" else s[s.index >= since]
     if hist.empty:
@@ -842,7 +906,9 @@ def analyze(ind, s, kospi):
     stale = (TODAY - last).days > stale_days
     z = ind["zones"][zone_of(ind, v)]
     return {
-        "value": v, "prev": pv, "date": last, "zone": z, "source_note": source_note,
+        "value": v, "prev": pv, "prev_date": prev_date, "previous": previous,
+        "history": market_history(ind, s),
+        "date": last, "zone": z, "source_note": source_note,
         "pos": marker_pos(ind, v), "prev_pos": None if np.isnan(pv) else marker_pos(ind, pv),
         "pct": (hist <= v).mean() * 100, "since": f"{actual_since}~ · {len(hist):,}개", "stale": stale,
     }
@@ -866,7 +932,8 @@ def summary_sentence(v):
         return "필수 그룹 자료가 부족해 종합 판정을 보류합니다"
     e, i, s, m = v["economy"]["score"], v["internals"]["score"], v["sentiment"]["score"], v["money"]["score"]
     if e >= 0 and i < 0:
-        text = "경기 지표는 아직 버티는데 시장 내부가 먼저 약해진 조합"
+        economy = "양호" if e > 0 else "중립"
+        text = f"경기는 {economy} · 시장 내부는 약함"
     elif e < 0 and i < 0:
         text = "경기와 시장 내부가 함께 약한 조합"
     elif e < 0 and i >= 0:
@@ -882,49 +949,6 @@ def summary_sentence(v):
     return text
 
 
-def asof(s, when):
-    t = s[:when]
-    return t.iloc[-1] if len(t) else np.nan
-
-
-def period_returns(px, assets=None):
-    rows = []
-    for a in assets or CFG["period_assets"]:
-        if a["ticker"] not in px:
-            continue
-        s = px[a["ticker"]].dropna()
-        if len(s) < 2:
-            continue
-        last, v = s.index[-1], s.iloc[-1]
-        base = {
-            "1D": s.iloc[-2],
-            "1W": asof(s, last - pd.Timedelta(days=7)),
-            "1M": asof(s, last - pd.DateOffset(months=1)),
-            "YTD": asof(s, pd.Timestamp(last.year - 1, 12, 31)),
-            "1Y": asof(s, last - pd.DateOffset(years=1)),
-        }
-        w = s[s.index > last - pd.Timedelta(days=365)]
-        rows.append({
-            "name": a["name"], "decimals": a["decimals"], "price": v, "date": last,
-            **{k: (v / b - 1) * 100 for k, b in base.items()},
-            "high": w.max(), "high_date": w.idxmax(), "from_high": (v / w.max() - 1) * 100,
-        })
-    return rows
-
-
-def sector_flow(px):
-    sc = CFG["sectors"]
-    bench = sc["benchmark"]["ticker"]
-    monthly = px.resample("ME").last()
-    ret = monthly.pct_change(fill_method=None) * 100
-    names = {it["ticker"]: it["name"] for it in sc["items"] if it["ticker"] in ret}
-    rel = ret[list(names)].sub(ret[bench], axis=0).iloc[-sc["months"]:]
-    rel = rel.rename(columns=names).T
-    partial = px.index[-1].normalize() < rel.columns[-1].normalize()
-    rel["3개월 합계"] = rel.iloc[:, -3:].sum(axis=1, min_count=1)
-    return rel.sort_values("3개월 합계", ascending=False), partial
-
-
 # ---------------------------------------------------------------- 표시 형식
 
 def num(v, d, unit="", sign=False):
@@ -933,19 +957,24 @@ def num(v, d, unit="", sign=False):
     return f"{v:+,.{d}f}{unit}" if sign else f"{v:,.{d}f}{unit}"
 
 
+def market_number_tone(score):
+    """플러스는 빨강, 마이너스는 파랑, 0은 회색."""
+    return "var(--bad)" if score > 0 else "var(--accent)" if score < 0 else "var(--text-2)"
+
+
+def market_verdict_tone(signal):
+    """긍정 판정은 파랑, 부정 판정은 빨강, 중립은 회색."""
+    return market_number_tone(-signal)
+
+
+def market_summary_number(value, decimals, unit):
+    text = num(value, decimals, unit, sign=True)
+    score = round(value, decimals) if value is not None else 0
+    return f'<b style="color:{market_number_tone(score)}">{text}</b>'
+
+
 def delta_unit(unit):
     return "%p" if unit in ("%", "%p") else unit
-
-
-def heat(v, cap):
-    """값 크기에 따라 초록(+)/빨강(−) 배경."""
-    if v is None or np.isnan(v):
-        return "background:var(--bg)"
-    if v == 0:
-        return "background:var(--surface-2)"
-    a = 0.18 + 0.72 * min(abs(v) / cap, 1)
-    rgb = "98,213,154" if v > 0 else "255,119,112"
-    return f"background:rgba({rgb},{a:.2f})"
 
 
 esc = html.escape
@@ -953,56 +982,228 @@ esc = html.escape
 
 # ---------------------------------------------------------------- HTML
 
-def render_row(ind, res, err, note=None):
-    star = "★ " if ind.get("star") else ""
-    name = f'<div class="nm"><b>{star}{esc(ind["name"])}</b><small>{esc(ind["sub"])}</small></div>'
+def market_observation_date(ind, date):
+    return date.strftime("%Y-%m-%d" if ind["freq"] == "daily" else "%Y-%m")
+
+
+def market_change(res):
+    previous = res.get("previous")
+    return not res["stale"] and previous is not None and previous["zone"]["label"] != res["zone"]["label"]
+
+
+def market_zone_rule(ind, res):
+    zones = ind["zones"]
+    index = zones.index(res["zone"])
+    lower = zones[index - 1]["max"] if index else None
+    upper = zones[index]["max"]
+    unit = ind["unit"]
+    bounds = []
+    for limit, relation in ((lower, "이상"), (upper, "미만")):
+        if limit is not None:
+            bounds.append((limit, f"{limit:,g}{unit} {relation}"))
+    if not bounds:
+        return ""
+
+    value = res["value"]
+    nearest, _ = min(bounds, key=lambda bound: abs(value - bound[0]))
+    distance = abs(value - nearest)
+    decimals = ind["decimals"]
+    gap = num(distance, decimals, delta_unit(unit))
+    if distance == 0:
+        distance_text = f"{nearest:,g}{unit} 경계에 위치"
+    elif round(distance, decimals) == 0:
+        distance_text = f"{nearest:,g}{unit} 경계까지 {num(10 ** -decimals, decimals, delta_unit(unit))} 미만"
+    else:
+        distance_text = f"{nearest:,g}{unit} 경계까지 {gap}"
+    interval = " ~ ".join(label for _, label in bounds)
+    return (f'<div class="market-zone-rule"><span>기준 {esc(interval)}</span>'
+            f'<small>{esc(distance_text)}</small></div>')
+
+
+def market_group_reason(group, rows):
+    active = [row for row in rows if row.get("res") and not row["res"]["stale"]]
+    if not active:
+        return "판정에 반영된 지표가 없습니다."
+    active.sort(key=lambda row: not row["ind"].get("star", False))
+    by_signal = {sign: [row for row in active if row["res"]["zone"]["signal"] == sign]
+                 for sign in (1, 0, -1)}
+
+    for signal, key in ((1, "pos"), (0, "neu"), (-1, "neg")):
+        if len(by_signal[signal]) == len(active):
+            lead = active[0]
+            ind, res = lead["ind"], lead["res"]
+            reading = num(res["value"], ind["decimals"], ind["unit"])
+            return (f'{len(active)}개 지표 모두 {group["labels"][key]}'
+                    f' · {ind["name"].removesuffix(" %")} {reading}')
+
+    parts = []
+    for signal, key in ((1, "pos"), (-1, "neg")):
+        members = by_signal[signal]
+        if members:
+            names = "·".join(row["ind"]["name"].removesuffix(" %") for row in members[:2])
+            extra = f" 외 {len(members) - 2}개" if len(members) > 2 else ""
+            parts.append(f'{group["labels"][key]} {names}{extra}')
+    return " / ".join(parts)
+
+
+def render_market_changes(rows):
+    changes = sorted(
+        (row for row in rows if row.get("res") and market_change(row["res"])),
+        key=lambda row: row["res"]["date"], reverse=True,
+    )
+    if not changes:
+        return ""
+    links = []
+    for row in changes:
+        ind, res = row["ind"], row["res"]
+        date = market_observation_date(ind, res["date"])
+        old, new = res["previous"]["zone"]["label"], res["zone"]["label"]
+        reading = num(res["value"], ind["decimals"], ind["unit"])
+        links.append(
+            f'<a href="#ind-{esc(ind["id"], quote=True)}">'
+            f'<time datetime="{date}">{date}</time> · {esc(ind["name"])} {esc(reading)}'
+            f' · {esc(old)} → {esc(new)}</a>'
+        )
+    return (f'<div class="market-recent"><b>최근 판정 변경 {len(changes)}건</b>'
+            f'<ul>{"".join(f"<li>{link}</li>" for link in links)}</ul></div>')
+
+
+def render_market_row(row):
+    ind = row["ind"]
+    star = '<span class="market-priority" role="img" aria-label="먼저 볼 지표">★</span> ' if ind.get("star") else ""
+    name = f'<div class="market-label"><h4>{star}{esc(ind["name"])}</h4></div>'
+    res = row.get("res")
+    attrs = f'class="market-row" id="ind-{ind["id"]}" tabindex="-1"'
     if res is None:
-        msg = note or ind["calc"].get("note") if note or ind["calc"]["src"] == "pending" else f"데이터 오류: {err}"
-        return f'<div class="row pending" id="ind-{ind["id"]}">{name}<div class="pend">{esc(msg)}</div></div>'
-    unit, d = ind["unit"], ind["decimals"]
-    prev_label = "1주 전" if ind["freq"] == "daily" else "전월"
-    z = res["zone"]
+        note = row.get("note") or ind["calc"].get("note") or f'데이터 오류 ({row.get("err", "원인 미확인")})'
+        state = "미연결" if row.get("note") or ind["calc"]["src"] == "pending" else "수신 실패"
+        return (f'<article {attrs} data-state="unavailable">{name}<div class="market-unavailable">'
+                f'<strong>{state} · 판정 제외</strong><small>{esc(note)}</small></div></article>')
+
+    unit, decimals = ind["unit"], ind["decimals"]
+    val = res["value"]
+    date = market_observation_date(ind, res["date"])
+    stale = res["stale"]
+    signed = ind["id"] in ("kr_curve", "exports", "sox_gap", "kospi_gap", "foreign_net")
+    reading = f'<b>{num(val, decimals, unit, sign=signed)}</b>'
+
+    period = "1주" if ind["freq"] == "daily" else "전월"
+    prev = res["prev"]
+    if pd.notna(prev):
+        prev_date = res["prev_date"]
+        benchmark_date = f' · {market_observation_date(ind, prev_date)}' if prev_date is not None else ""
+        delta = round(val - prev, decimals)
+        movement = "증가" if delta > 0 else "감소" if delta < 0 else "변화 없음"
+        change = f'<b>{num(delta, decimals, delta_unit(unit), sign=True)}</b> ' if delta else ""
+        comparison = f'<div class="market-delta">{period} 변화 · {change}{movement}</div>'
+        benchmark = f'<small>비교값 {num(prev, decimals, unit)}{benchmark_date}</small>'
+    else:
+        comparison = f'<div class="market-delta">{period} 비교 자료 없음</div>'
+        benchmark = ""
+
+    zone = res["zone"]
+    direction = {1: "긍정 +1", 0: "중립 0", -1: "부정 −1"}[zone["signal"]]
+    if zone["label"] == "중립":
+        direction = "0"
+    state = "delayed" if stale else "negative" if zone["signal"] < 0 else "current"
+    previous = res.get("previous")
+    changed = market_change(res)
+    change_state = "yes" if changed else "no" if previous is not None else "unknown"
+    change_line = ""
+    if stale:
+        verdict = (f'<strong>갱신 지연 · 판정 제외</strong>'
+                   f'<small>마지막 관측의 판정 · {esc(zone["label"])}</small>')
+        transition = "판정 변경 집계 제외"
+    else:
+        verdict = (f'<strong style="color:{market_verdict_tone(zone["signal"])}">{esc(zone["label"])}</strong>'
+                   f'<span class="market-direction">{direction}</span>{market_zone_rule(ind, res)}')
+        transition = "직전 관측 비교 자료 없음"
+        if previous is not None:
+            previous_date = market_observation_date(ind, previous["date"])
+            transition = f'직전 관측 {previous_date} · {esc(previous["zone"]["label"])}'
+            if changed:
+                change_line = (f'<small class="market-transition"><b>판정 변경</b>'
+                               f' · {esc(previous["zone"]["label"])} → {esc(zone["label"])}'
+                               f' <span class="market-transition-date">({previous_date} → {date})</span></small>')
+
+    pct = round(res["pct"])
+    end = res["date"].strftime("%Y-%m")
+    first, samples = res["since"].split("~ · ", maxsplit=1)
+    date_label = "관측일" if ind["freq"] == "daily" else "관측월"
+    source = f'<small>{esc(res["source_note"])}</small>' if res.get("source_note") else ""
     return (
-        f'<div class="row" id="ind-{ind["id"]}">{name}'
-        f'<div class="val"><b>{num(res["value"], d)}<small>{unit}</small></b>'
-        f'<small>{prev_label} {num(res["prev"], d)}</small><small class="asof">{res["date"]:%Y-%m-%d} 기준{" · 갱신 지연" if res.get("stale") else ""}</small>{"<small>" + esc(res["source_note"]) + "</small>" if res.get("source_note") else ""}</div>'
-        f'<div class="mean"><b style="color:{COLORS[z["color"]]}">{esc(z["label"])}</b><small>{esc(z["meaning"])}</small></div>'
-        f'<div class="pos"><b>{res["pct"]:.0f}%</b><div class="mini"><i style="width:{res["pct"]:.0f}%"></i></div>'
-        f'<small>{res["since"]}</small></div></div>')
+        f'<article {attrs} data-state="{state}" data-change="{change_state}">'
+        f'{name}<div class="market-reading">{reading}<small>{date_label} <time datetime="{date}">{date}</time></small>'
+        f'{comparison}</div><div class="market-verdict">{verdict}{change_line}</div>'
+        f'<details class="market-row-details"><summary>상세 보기<span class="market-sr-only"> · {esc(ind["name"])}</span></summary>'
+        f'<div class="market-detail-body">{render_market_history(ind, res.get("history"))}'
+        f'<div><small>{esc(ind["sub"])}</small><small>{esc(zone["meaning"])}</small>'
+        f'{benchmark}<small>{transition}</small>{source}</div>'
+        f'<div class="market-rank"><small>과거 백분위</small><b>{pct}%</b>'
+        f'<div class="market-rank-track" aria-hidden="true"><i style="width:{pct}%"></i></div>'
+        f'<small>{first} ~ {end}<br>{samples}</small></div></div></details></article>'
+    )
 
 
-def render_period(rows):
-    caps = {"1D": 3, "1W": 6, "1M": 12, "YTD": 35, "1Y": 50}
-    body = ""
-    for r in rows:
-        cells = "".join(f'<td class="hc" style="{heat(r[k], c)}">{num(r[k], 1, "%", True)}</td>' for k, c in caps.items())
-        fh = r["from_high"]
-        col = "var(--text)" if fh > -5 else "var(--warn)" if fh > -15 else "var(--bad)"
-        stale = f'<small>{r["date"]:%m-%d} 기준</small>' if (TODAY - r["date"]).days > 3 else ""
-        body += (
-            f'<tr><th>{esc(r["name"])}</th><td class="px">{num(r["price"], r["decimals"])}{stale}</td>{cells}'
-            f'<td class="hi"><b style="color:{col}">{num(fh, 1, "%", True)}</b>'
-            f'<small>최고 {num(r["high"], r["decimals"])} · {r["high_date"]:%y-%m-%d}</small></td></tr>')
-    head = "".join(f"<th>{k}</th>" for k in caps)
-    return (f'<table class="ptab"><thead><tr><th></th><th>현재가</th>{head}<th>52주 종가 최고 대비</th></tr></thead>'
-            f'<tbody>{body}</tbody></table>')
 
 
-def render_sectors(rel, partial):
-    months = list(rel.columns[:-1])
-    head = ""
-    for i, m in enumerate(months):
-        yr = f"<small>{m.year}</small>" if i == 0 or m.month == 1 else "<small>&nbsp;</small>"
-        star = "*" if partial and i == len(months) - 1 else ""
-        head += f"<th>{yr}{m.month:02d}월{star}</th>"
-    body = ""
-    for name, row in rel.iterrows():
-        cells = "".join(f'<td class="hc" style="{heat(row[m], 12)}">{num(row[m], 1, "", True)}</td>' for m in months)
-        t = row["3개월 합계"]
-        body += (f'<tr><th>{esc(name)}</th>{cells}'
-                 f'<td class="sum" style="color:{"var(--good)" if t > 0 else "var(--bad)"}">{num(t, 1, "", True)}</td></tr>')
-    return (f'<table class="stab"><thead><tr><th></th>{head}<th>3개월<br>합계</th></tr></thead>'
-            f'<tbody>{body}</tbody></table>')
+def render_market_assessment(ctx):
+    cards, sections = [], []
+    for group in CFG["groups"]:
+        group_id, name = group["id"], esc(group["name"])
+        group_rows = [row for row in ctx["rows"] if row["ind"]["group"] == group_id]
+        summary = ctx["verdicts"][group_id]
+        reason = esc(market_group_reason(group, group_rows))
+        counts = summary["counts"]
+        count_text = " · ".join(f'{esc(group["labels"][key])} {counts[key]}' for key in ("pos", "neu", "neg"))
+        coverage = f'{summary["expected"]}개 중 {summary["coverage"]}개 반영'
+        label = esc(summary["label"].removesuffix(" (일부 자료)"))
+        color = market_verdict_tone(summary["score"])
+        cards.append(
+            f'<button class="market-group-card" type="button" data-market-group="{group_id}" '
+            f'aria-controls="market-evidence-list" aria-pressed="false">'
+            f'<span class="market-group-name">{name}<span aria-hidden="true">↘</span></span>'
+            f'<strong style="color:{color}">{label}</strong>'
+            f'<span class="market-group-reason">{reason}</span>'
+            f'<small>{count_text} · {coverage}</small></button>')
+        rows = "".join(render_market_row(row) for row in group_rows)
+        sections.append(
+            f'<section class="market-section" data-market-section="{group_id}" aria-labelledby="grp-{group_id}">'
+            f'<header class="market-section-head"><h3 id="grp-{group_id}">{name}</h3>'
+            f'<span style="color:{color}">{label}</span><small>{coverage}</small></header>{rows}</section>')
+
+    return f"""<div class="tab on" id="t1">
+<section class="card market-summary" aria-labelledby="market-judgment">
+  <h2 id="market-judgment">오늘의 장세</h2>
+  <p class="market-headline">{esc(ctx["sentence"])}</p>
+  <div class="market-groups" role="group" aria-label="그룹별 판정 근거">{"".join(cards)}</div>
+  {render_market_changes(ctx["rows"])}
+  <details class="market-kpis"><summary>보조 시장 지표</summary><div class="kpis">{ctx["kpis"]}</div></details>
+</section>
+<section class="card market-evidence" aria-labelledby="market-evidence-title">
+  <div class="market-evidence-head">
+    <h2 id="market-evidence-title" tabindex="-1">판정 근거</h2>
+    <button class="market-scope" type="button" data-market-reset hidden>모든 그룹 보기</button>
+  </div>
+  <div class="market-filters" role="group" aria-label="판정 근거 필터">
+    <button type="button" data-market-filter="all" aria-controls="market-evidence-list" aria-pressed="true">전체</button>
+    <button type="button" data-market-filter="negative" aria-controls="market-evidence-list" aria-pressed="false">부정 판정</button>
+    <button type="button" data-market-filter="changed" aria-controls="market-evidence-list" aria-pressed="false">판정 변경</button>
+  </div>
+  <p class="market-result" role="status">{len(ctx["rows"])}개 지표</p>
+  <p class="market-empty" hidden></p>
+  <div id="market-evidence-list">{"".join(sections)}</div>
+  <details class="market-guide">
+    <summary>판정 및 백분위 읽는 법</summary>
+    <ul>
+      <li>판정은 긍정이 파랑, 부정이 빨강, 중립이 회색입니다. 각 지표의 판정 점수를 더해 그룹을 판단하며, 지연 및 미연결 자료는 제외합니다.</li>
+      <li>변화폭은 일간 지표의 1주 전과 월간 지표의 전월 값을 기준으로 계산합니다. 판정 변경은 직전 관측값에 같은 기준을 적용해 비교합니다.</li>
+      <li>과거 백분위는 표시 기간의 관측값 중 현재 값 이하인 비율입니다. 시장 내부의 종목 비율은 코스피·코스닥 혼합 {ctx["uni_n"]}종목 표본입니다.</li>
+    </ul>
+  </details>
+</section>
+{local_views.MARKET_SCRIPT}
+</div>"""
 
 
 CSS = """
@@ -1012,13 +1213,7 @@ h1{font-size:17px;margin:0 0 4px}
 .meta{color:var(--mu);font-size:12px}
 .tab{display:none}.tab.on{display:block}
 .card{background:var(--surface);border:1px solid var(--border);border-radius:24px;padding:18px;margin-bottom:14px;box-shadow:var(--card-shadow)}
-.status b.big{font-size:15px}
-.headline{background:var(--bg);border-left:3px solid var(--accent);padding:8px 12px;margin:10px 0;border-radius:4px}
 .kpis{color:var(--mu)}.kpis b{color:var(--tx)}
-.gcards{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:10px}
-.gcard{border:1px solid var(--line);border-top:3px solid;border-radius:8px;padding:8px 10px}
-.gcard div{font-size:16px;font-weight:700}
-.gcard small{color:var(--mu)}
 .flow{margin-top:6px;color:var(--mu)}.flow a{color:var(--mu);text-decoration:none;margin-right:2px}.flow a:hover b{text-decoration:underline}.flow b{color:var(--tx)}
 .jump{margin:-4px 0 8px;color:var(--mu);font-size:12px}.jump a{display:inline-block;margin:2px 4px;padding:3px 10px;border:1px solid var(--line);border-radius:12px;color:var(--tx);text-decoration:none}.jump a:hover{border-color:var(--accent);color:var(--accent)}
 .chead{font-size:18px;font-weight:700;margin:2px 0 6px}.chead .cdate{font-size:12px;font-weight:500;color:var(--mu);background:var(--bg);border-radius:5px;padding:2px 8px;margin-right:10px;vertical-align:middle}
@@ -1057,16 +1252,42 @@ h1{font-size:17px;margin:0 0 4px}
 .ftab tbody th{background:var(--bg);color:var(--text-2);font-weight:500;text-align:left;padding:12px 14px;border-radius:10px 0 0 10px;border-left:3px solid var(--border);width:24%}
 .ftab tbody th small{display:block;color:var(--mu);font-size:10.5px;font-weight:400}.ftab tbody th b{color:var(--text)}
 .ftab td{text-align:left;padding:12px 14px;font-weight:700;background:var(--bg);font-variant-numeric:tabular-nums}.ftab td:last-child{border-radius:0 10px 10px 0}
-.qhead{display:flex;align-items:center;flex-wrap:wrap;gap:4px;margin-bottom:12px}.qhead>span:last-child{color:var(--mu);font-size:12px}
-.qsplit{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:22px;align-items:start}
-.qleft .ilegend{justify-content:flex-start;flex-wrap:wrap;margin-bottom:8px}.qleft .ictrl{gap:6px}.qleft .igroup button{padding:5px 9px}
-.qtab{border-spacing:0;width:100%;font-family:ui-monospace,Consolas,monospace;font-size:12px;font-variant-numeric:tabular-nums}
+.qhead{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px 16px;margin-bottom:12px}
+.qhead h2{margin:0;font-size:17px;line-height:1.35}
+.qhead time,.qhead small,.qtoolbar label,.qshort-context{color:var(--text-3);font-size:12px}
+.qtoolbar{display:flex;align-items:flex-end;flex-wrap:wrap;gap:8px 14px;margin-bottom:11px}
+.qtoolbar label{display:grid;gap:4px}
+.qtoolbar select{font:inherit;color:var(--text);background:var(--bg);border:1px solid var(--border);border-radius:9px;padding:7px 9px}
+.qtoolbar select:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.qtoolbar .igroup{gap:6px;border:0;overflow:visible}
+.qtoolbar .igroup button{border:1px solid var(--border);border-radius:9px;min-height:34px}
+.qtoolbar .igroup button[aria-pressed=true]{background:var(--selection);color:var(--selection-text);border-color:var(--selection);font-weight:700}
+.qview-label{font-weight:700}
+.qinvestor-controls .ictrl{gap:6px;margin-bottom:7px}
+.qinvestor-controls .igroup button{padding:5px 9px}
+.qinvestor-controls .ilegend{justify-content:flex-start;flex-wrap:wrap;margin-bottom:8px}
+.qinvestor-controls .igroup button[aria-pressed=true],.qnet-switch button[aria-pressed=true]{background:var(--bg);color:var(--text);font-weight:700;box-shadow:inset 0 -2px var(--accent)}
+.qshort-context{font-variant-numeric:tabular-nums;margin:0 0 7px}
+.qtab{border-spacing:0;width:100%;font:inherit;font-variant-numeric:tabular-nums}
 .qtab th,.qtab td{padding:9px 6px;border-bottom:1px solid var(--border);background:transparent;border-left:0;border-radius:0;text-align:right;white-space:nowrap}
-.qtab thead th{color:var(--mu);font-weight:600;font-size:11.5px}.qtab thead th.qgrp{text-align:center;color:var(--text-2);border-bottom:1px solid var(--border)}
-.qtab tbody th{text-align:left;color:var(--text);font-family:inherit;font-weight:700;font-size:12.5px}.qtab tbody th small{display:block;color:var(--mu);font-weight:400;font-size:10.5px}
-.qtab th:first-child{text-align:left}.qtab td.up{color:var(--bad)}.qtab td.down{color:var(--series-1)}.qtab td{color:var(--text)}.qtab td.qnow{font-weight:700}
-.qshort{margin-top:14px}.qnote{color:var(--text-2);font-size:12px;margin:12px 0 0}.qnote b{color:var(--text)}
-@media (max-width:1100px){.qsplit{grid-template-columns:minmax(0,1fr)}}
+.qtab thead th{color:var(--text-3);font-weight:600;font-size:12px;border-top:1px solid var(--border)}
+.qtab tbody th,.qtab td{color:var(--text)}
+.qtab th:first-child{text-align:left}
+.qtab tbody tr:last-child :is(th,td){border-bottom:0}
+.qnote{color:var(--text-2);font-size:12px;margin:10px 0 0}
+.qnote b{color:var(--text)}
+.qshort-metrics{display:flex;align-items:baseline;flex-wrap:wrap;gap:12px 30px;margin:4px 0 12px}
+.qshort-metrics dt{font-size:12px;color:var(--text-3)}
+.qshort-metrics dd{margin:0;font-size:24px;font-weight:700;line-height:1.35;font-variant-numeric:tabular-nums}
+.qshort-metrics div+div dd{font-size:19px}
+.qshort-metrics dd span{margin-left:1px;font-size:13px}
+@media (max-width:480px){
+  .qtab th,.qtab td{padding:8px 4px}
+  .qshort-card .qtab th span{display:block}
+}
+@media (pointer:coarse){
+  .qtoolbar select,.qtoolbar button,.qinvestor-controls button,.qnet-switch button{min-height:44px}
+}
 .ftab.fwide{min-width:760px}.ftab td small{display:block;font-size:10.5px;font-weight:500;opacity:.8;margin-top:2px}
 .ftab td.fplain{color:var(--text)}.ftab tr.fsep th,.ftab tr.fsep td{box-shadow:inset 0 2px 0 var(--border)}
 .ftab td.fpos{color:var(--good);background:rgba(98,213,154,.09)}.ftab td.fneg{color:var(--bad);background:rgba(255,119,112,.09)}
@@ -1103,20 +1324,10 @@ h1{font-size:17px;margin:0 0 4px}
 .tvbar .sep{width:1px;height:20px;background:var(--grid);margin:0 6px}
 .tvclock{margin-left:auto;color:var(--text-2);font-size:12px;font-variant-numeric:tabular-nums}
 .tvcredit{text-align:center;color:var(--mu);font-size:11px;padding:2px 0 14px}
-.row:target{background:var(--surface-2);outline:1px solid var(--accent);border-radius:6px}
-.fresh{color:var(--mu);font-size:11.5px;margin-top:8px}.fresh b{color:var(--accent);font-weight:500}
 .sec-title{display:inline-block;font-size:16px;font-weight:700;border:1px solid var(--border);background:var(--bg);padding:6px 14px;border-radius:12px;margin-right:10px}
 .sec-head{margin-bottom:12px}.sec-head span{color:var(--mu);font-size:12px}
 .scroll{overflow-x:auto}
 .grid{min-width:700px}
-.ghead{margin:16px 0 6px;font-weight:700}
-.ghead .pill{font-size:11px;border:1px solid;border-radius:4px;padding:1px 6px;margin:0 6px}
-.ghead small{color:var(--mu);font-weight:400}
-.row{display:grid;grid-template-columns:210px 120px minmax(230px,1fr) 110px;gap:12px;align-items:center;padding:8px 6px;border-bottom:1px solid var(--line)}
-.row.pending{grid-template-columns:210px 1fr;opacity:.6}
-.pend{color:var(--mu);font-style:italic}
-.nm b{display:block}.nm small,.val small,.mean small,.pos small{display:block;color:var(--mu);font-size:11px}
-.val b{font-size:17px}.val b small{display:inline;font-size:11px;color:var(--mu);margin-left:2px}
 .bar{position:relative;padding-top:15px}
 .segs{display:flex;gap:2px}
 .seg{flex:1;position:relative}
@@ -1127,8 +1338,6 @@ h1{font-size:17px;margin:0 0 4px}
 .dot.now{width:15px;height:15px;border:2px solid var(--text);box-shadow:0 0 0 2px #0008}
 .dot.prev{width:7px;height:7px;background:var(--bg);border:1.5px solid var(--text)}
 .trail{position:absolute;top:50%;border-top:1.5px dotted var(--text);opacity:.7}
-.mean{background:var(--bg);border-radius:6px;padding:6px 8px}
-.pos b{font-size:15px}.mini{height:3px;background:var(--surface-2);border-radius:2px;margin:3px 0}.mini i{display:block;height:3px;background:var(--text-2);border-radius:2px}
 
 .muted{color:var(--mu);font-size:11px}
 .legend{color:var(--mu);font-size:11px;margin-top:10px}
@@ -1137,12 +1346,7 @@ th{font-weight:600;text-align:left;white-space:nowrap;padding:4px 8px}
 thead th{text-align:center;color:var(--mu);font-size:11.5px;font-weight:500}
 thead th small{display:block;font-size:10px}
 td{padding:6px 8px;text-align:center;white-space:nowrap}
-td.hc{border-radius:4px;font-weight:600;min-width:62px}
 tbody th{background:var(--bg);border-left:3px solid var(--border);border-radius:4px}
-td.sum{font-weight:700}
-td.px{text-align:right}td.px small,td.hi small{display:block;color:var(--mu);font-size:10.5px;font-weight:400}
-td.hi{background:var(--bg);border-radius:4px}
-.ptab td.hc{min-width:96px}
 .digest{background:var(--bg);border-left:3px solid var(--accent);border-radius:4px;padding:10px 14px;margin-bottom:12px}
 .digest ul{margin:6px 0 6px 18px;padding:0}.digest li{margin:3px 0}.digest small{color:var(--mu);font-size:11px}
 .note{color:var(--mu);font-size:12px;background:var(--bg);border:1px solid var(--line);border-radius:4px;padding:8px 12px;margin:0 0 10px}
@@ -1209,7 +1413,7 @@ td.hi{background:var(--bg);border-radius:4px}
 button:focus-visible,a:focus-visible,summary:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
 .tvbar,.tvfoot{flex-wrap:wrap}.tvframe{margin:12px 8px 6px}.asof{font-size:10px}
 @media (max-width:900px){.fbody{grid-template-columns:1fr}}
-@media (max-width:760px){.fkpis{grid-template-columns:repeat(2,1fr)}.fkpi b{font-size:19px}.gcards{grid-template-columns:repeat(2,1fr)}.card{padding:12px}.tvclock{width:100%;margin-left:0}.cchart{min-width:500px}.cpanel{overflow-x:auto}}
+@media (max-width:760px){.fkpis{grid-template-columns:repeat(2,1fr)}.fkpi b{font-size:19px}.card{padding:12px}.tvclock{width:100%;margin-left:0}.cchart{min-width:500px}.cpanel{overflow-x:auto}}
 """
 
 
@@ -1303,6 +1507,8 @@ def collect_news():
 
 
 CREDIT_WINDOW_YEARS = 2
+CREDIT_CHANGE_SESSIONS = (1, 5)
+CREDIT_CHANGE_MONTHS = (1, 3)
 
 
 def _extremes(s, half_window=40):
@@ -1331,16 +1537,18 @@ def _credit_view(s, unit, decimals):
 
 
 def credit_changes(credit, sessions, asof):
-    """최신 공시 잔고에서 1·5거래일 전 잔고를 뺀다. 공시 누락일은 비워 둔다."""
+    """거래일 수와 달력상 개월 수로 이전 공시 잔고를 비교한다."""
     dates = credit.index.union(sessions).sort_values()
     dates = dates[dates <= asof]
+    compare_dates = [dates[-days - 1] if len(dates) > days else pd.NaT for days in CREDIT_CHANGE_SESSIONS]
+    compare_dates.extend(dates.asof(asof - pd.DateOffset(months=months)) for months in CREDIT_CHANGE_MONTHS)
+    current = credit.loc[asof]
     changes = []
-    for days in (1, 5):
-        previous = dates[-days - 1] if len(dates) > days else None
-        balance = credit.get(previous)
+    for previous in compare_dates:
+        balance = credit.get(previous) if pd.notna(previous) else None
         changes.append({
-            "date": previous.strftime("%Y-%m-%d") if previous is not None else None,
-            "amount": int(credit.loc[asof] - balance) if pd.notna(balance) and balance > 0 else None,
+            "date": previous.strftime("%Y-%m-%d") if pd.notna(previous) else None,
+            "amount": int(current - balance) if pd.notna(balance) and balance > 0 else None,
         })
     return changes
 
@@ -1358,17 +1566,9 @@ def credit_panel(name, credit, index, cap, since):
 
     if df.empty:
         raise ValueError(f"{name} 신용 데이터가 비어 있습니다")
-    # 머리말: 최근 20거래일 안의 꼭지(또는 바닥)에서 지금까지의 변화
-    recent = df["credit"].tail(21)
-    last_d, last_v = recent.index[-1], recent.iloc[-1]
-    ref_d = recent.idxmax() if recent.idxmax() != last_d else recent.idxmin()
-    days = len(recent.loc[ref_d:]) - 1
-    chg = (last_v / recent[ref_d] - 1) * 100
-    ref, verb = ("고점", "감소했습니다") if chg < 0 else ("저점", "증가했습니다")
-    headline = (f"{name} 신용 {last_v / 1e12:.1f}조, 이전 {ref} 대비 {abs(chg):.1f}% {verb}"
-                if days > 0 else f"{name} 신용 {last_v / 1e12:.1f}조")
+    last_d = df.index[-1]
     return {
-        "name": name, "asof": day(last_d), "headline": headline,
+        "name": name, "asof": day(last_d),
         "changes": credit_changes(credit, index.dropna().index, last_d),
         "index": [[day(d), round(v, 2)] for d, v in df["index"].dropna().items()],
         "amount": _credit_view(df["credit"] / 1e12, "조", 1),
@@ -1430,9 +1630,13 @@ def render_credit_changes(panels):
         f'<tr><th scope="row">{esc(p["name"])}</th><td>{esc(p["asof"])}</td>'
         + "".join(change_cell(change) for change in p["changes"]) + "</tr>"
         for p in panels)
+    periods = (
+        "".join(f'<th scope="col">{days}거래일 증감</th>' for days in CREDIT_CHANGE_SESSIONS)
+        + "".join(f'<th scope="col">{months}개월 증감</th>' for months in CREDIT_CHANGE_MONTHS)
+    )
     return ('<div class="scroll"><table aria-label="시장별 신용잔고 증감액"><thead><tr>'
-            '<th>시장</th><th>잔고 기준일</th><th>1거래일 증감</th><th>5거래일 증감</th>'
-            f'</tr></thead><tbody>{rows}</tbody></table></div>')
+            '<th scope="col">시장</th><th scope="col">잔고 기준일</th>'
+            f'{periods}</tr></thead><tbody>{rows}</tbody></table></div>')
 
 
 def credit_index_heading(panel, name):
@@ -1442,6 +1646,12 @@ def credit_index_heading(panel, name):
         return f'<div class="cname">{label}</div>'
     date, close = index[-1]
     return f'<div class="cname" title="{esc(date)} 종가">{label} : {close:,.0f}</div>'
+
+
+def credit_balance_heading(panel, label):
+    date, amount = panel["amount"]["line"][-1]
+    return (f'<div class="chead"><time class="cdate" datetime="{esc(date)}">{esc(date)}</time>'
+            f'{esc(label)} {amount:,.2f}조 원</div>')
 
 
 def render_credit(data):
@@ -1461,21 +1671,18 @@ def render_credit(data):
     if deposit is not None:
         legend += '<span><i style="background:var(--good)"></i>투자자예탁금</span>'
     legend += '<span><i style="background:var(--text-3)"></i>지수</span></div>'
-    heads = "".join(
-        f'<div class="chead"><span class="cdate">{p["asof"][5:].replace("-", ".")}</span>{esc(p["headline"])}</div>'
-        for p in panels)
     changes = render_credit_changes(panels) if panels else ""
     charts = "".join(
-        f'<div class="cpanel">{credit_index_heading(p, p["name"])}{trend_charts.controls()}<div class="cchart" data-credit="{i}:amount"></div></div>'
+        f'<div class="cpanel">{credit_balance_heading(p, p["name"] + " 신용잔고")}'
+        f'{credit_index_heading(p, p["name"])}{trend_charts.controls()}<div class="cchart" data-credit="{i}:amount"></div></div>'
         for i, p in enumerate(panels))
     if deposit is not None:
-        asof, amount = deposit["amount"]["line"][-1]
         index_heading = credit_index_heading(deposit, "코스피") if deposit.get("index") else ""
         charts += (
-            f'<div class="cpanel"><div class="chead"><span class="cdate">{asof}</span>투자자예탁금 {amount:,.2f}조 원</div>'
+            f'<div class="cpanel">{credit_balance_heading(deposit, "투자자예탁금")}'
             f'{index_heading}{trend_charts.controls()}<div class="cchart" data-credit="deposit:amount"></div></div>')
     source = f'<div class="legend">※ 출처: 금융투자협회 · 최근 {CREDIT_WINDOW_YEARS}년 일별 잔고</div>'
-    return f'{notes}<div class="card">{heads}{changes}{legend}{charts}{source}</div>'
+    return f'{notes}<div class="card">{changes}{legend}{charts}{source}</div>'
 
 
 STOCK_JS = r"""
@@ -1651,53 +1858,116 @@ function drawStock(id) {
   tvRange(id, '1Y'); setOn('iv', id, 'D');
   const clock = document.getElementById('clock-' + id);
   const tick = () => { clock.textContent = new Date().toLocaleTimeString('en-GB', {timeZone: 'Asia/Seoul'}) + ' UTC+9'; };
-  tick(); setInterval(tick, 1000);
+  tick(); TV[id].clockTimer = setInterval(tick, 1000);
   drawFlow(id);
   drawFcf(id);
 }
 
-// 투자자별 매매 동향 (ECharts): 주체 · 누적/일별 · 단위(주/억원) · 기간(1/3/6개월)을 버튼으로 바꾼다.
+// 종목 수급 차트와 순매수 표의 선택 상태는 서로 독립적이다.
 const WHO = [['외국인', plotColor('series-1')], ['기관', plotColor('series-2')], ['개인', plotColor('text-2')]];
 const FLOW = {};
-const FLOW_DAYS = {'30': 30, '60': 60, '120': 120};  // 거래일
-function flowSet(id, key, value) { const f = FLOW[id]; if (!f) return; f[key] = value; renderFlow(id); }
+
+function flowTableSet(button) {
+  const card = button.closest('.qnet-card');
+  for (const peer of card.querySelectorAll('[data-qnet]')) {
+    peer.setAttribute('aria-pressed', String(peer === button));
+  }
+  for (const panel of card.querySelectorAll('[data-qnet-panel]')) {
+    panel.hidden = panel.dataset.qnetPanel !== button.dataset.qnet;
+  }
+}
+
+function flowSet(id, key, value) {
+  const f = FLOW[id];
+  if (!f) return;
+  f[key] = value;
+  renderFlow(id);
+}
+
 function renderFlow(id) {
-  const f = FLOW[id], d = f.d, n = d.dates.length, start = Math.max(0, n - FLOW_DAYS[f.p]);
-  const dates = d.dates.slice(start), src = d[f.unit], unit = f.unit === 'volume' ? '주' : '억원';
+  const f = FLOW[id], d = f.d;
+  const start = Math.max(0, d.dates.length - Number(f.p));
+  const dates = d.dates.slice(start);
+  const shortOnly = f.view === 'short';
+  const bars = !shortOnly && f.mode === 'day';
+  const unit = f.unit === 'volume' ? '주' : '억원';
   const fmt = v => Math.round(v).toLocaleString();
-  const series = WHO.filter(([k]) => f.who === 'all' || f.who === k).map(([k, color]) => {
-    let vals = src[k].slice(start);
-    if (f.mode === 'cum') { let s = 0; vals = vals.map(v => (s += v)); }
-    return f.mode === 'cum'
-      ? {name: k, type: 'line', data: vals, showSymbol: false, lineStyle: {color, width: 2}, itemStyle: {color}}
-      : {name: k, type: 'bar', data: vals, itemStyle: {color}, barMaxWidth: 10};
+  const series = shortOnly ? [] : WHO.filter(([name]) => f.who === 'all' || f.who === name).map(([name, color]) => {
+    let data = d[f.unit][name].slice(start);
+    if (!bars) {
+      let cumulative = 0;
+      data = data.map(value => (cumulative += value));
+    }
+    return bars
+      ? {name, type: 'bar', data, itemStyle: {color}, barMaxWidth: 10}
+      : {name, type: 'line', data, showSymbol: false, lineStyle: {color, width: 2}, itemStyle: {color}};
   });
-  series[0].markLine = {symbol: 'none', silent: true, label: {show: false}, lineStyle: {color: plotColor('text-3'), type: 'dashed'}, data: [{yAxis: 0}]};
+  if (series.length) {
+    series[0].markLine = {symbol: 'none', silent: true, label: {show: false},
+      lineStyle: {color: plotColor('text-3'), type: 'dashed'}, data: [{yAxis: 0}]};
+  }
   const bal = (d.short_bal || []).slice(start);
-  if (bal.some(v => v !== null))
-    series.push({name: '공매도 잔고 비중', type: 'line', yAxisIndex: 1, data: bal, connectNulls: true, showSymbol: false,
-      lineStyle: {color: plotColor('series-3'), width: 1.5, type: 'dashed'}, itemStyle: {color: plotColor('series-3')}});
+  const hasShort = bal.some(Number.isFinite);
+  const shortColor = plotColor('series-3');
+  const shortName = '공매도 잔고비중';
+  if (hasShort) {
+    series.push({name: shortName, type: 'line', yAxisIndex: shortOnly ? 0 : 1, data: bal,
+      connectNulls: true, showSymbol: false, itemStyle: {color: shortColor},
+      lineStyle: {color: shortColor, width: shortOnly ? 2 : 1.5, type: shortOnly ? 'solid' : 'dashed'}});
+  }
+  const shortAxis = {type: 'value', position: 'right', name: '잔고 비중(%)', show: hasShort,
+    scale: true, nameTextStyle: {color: shortColor, fontSize: 11},
+    splitLine: {show: shortOnly, lineStyle: {color: plotColor('grid')}},
+    axisLabel: {color: shortColor, fontSize: 10, formatter: v => v.toFixed(2)}};
+  const investorAxis = {type: 'value', position: 'left', name: '(' + unit + ')',
+    nameTextStyle: {color: plotColor('text-3'), fontSize: 11}, splitLine: {lineStyle: {color: plotColor('grid')}},
+    axisLabel: {color: plotColor('text-3'), fontSize: 10, formatter: fmt}};
+  const card = f.card;
+  card.querySelector('.qinvestor-controls').hidden = shortOnly;
+  for (const label of card.querySelectorAll('[data-flow-legend]')) {
+    label.hidden = f.who !== 'all' && f.who !== label.dataset.flowLegend;
+  }
+  const shortLegend = card.querySelector('.qshort-legend');
+  if (shortLegend) shortLegend.hidden = !hasShort;
+  const status = card.querySelector('.qshort-context');
+  status.hidden = !shortOnly;
+  if (shortOnly) {
+    const last = bal.findLastIndex(Number.isFinite);
+    status.textContent = hasShort ? '최근 공시 ' + dates[last] + ' · ' + bal[last].toFixed(3) + '%' : '선택한 기간에 공시된 잔고비중이 없습니다.';
+  }
+  f.chart.getDom().setAttribute('aria-label', shortOnly ? '공매도 잔고비중' : '투자자별 순매수와 공매도 잔고비중');
   f.chart.setOption({
     animation: false, backgroundColor: 'transparent',
-    grid: {left: 62, right: 50, top: 28, bottom: 28},
-    tooltip: {trigger: 'axis', backgroundColor: plotColor('surface'), borderColor: plotColor('border'), textStyle: {color: plotColor('text'), fontSize: 12},
-      formatter: ps => ps[0].axisValue + '<br>' + ps.map(p => p.marker + p.seriesName + ' <b>' + (p.seriesName === '공매도 잔고 비중'
-        ? (p.value === null || p.value === undefined ? '—' : p.value.toFixed(3) + '%') : (p.value > 0 ? '+' : '') + fmt(p.value) + unit) + '</b>').join('<br>')},
-    xAxis: {type: 'category', data: dates, boundaryGap: f.mode === 'day', axisLine: {lineStyle: {color: plotColor('border')}}, axisTick: {show: false},
-      axisLabel: {color: plotColor('text-3'), fontSize: 11, formatter: v => v.slice(5).replace('-', '.')}},
-    yAxis: [{type: 'value', position: 'left', name: '(' + unit + ')', nameTextStyle: {color: plotColor('text-3'), fontSize: 11},
-      splitLine: {lineStyle: {color: plotColor('grid')}}, axisLabel: {color: plotColor('text-3'), fontSize: 10, formatter: fmt}},
-      {type: 'value', position: 'right', name: '잔고 비중(%)', nameTextStyle: {color: plotColor('text-3'), fontSize: 11}, scale: true,
-      splitLine: {show: false}, axisLabel: {color: plotColor('series-3'), fontSize: 10, formatter: v => v.toFixed(2)}}],
+    grid: {left: shortOnly ? 16 : 55, right: hasShort ? 53 : 18, top: 28, bottom: 28},
+    tooltip: {trigger: 'axis', backgroundColor: plotColor('surface'), borderColor: plotColor('border'),
+      textStyle: {color: plotColor('text'), fontSize: 12},
+      formatter: points => {
+        if (!points.length) return '';
+        return points[0].axisValue + '<br>' + points.map(point => {
+          const value = point.value;
+          const shown = !Number.isFinite(value) ? '—' : point.seriesName === shortName
+            ? value.toFixed(3) + '%' : (value > 0 ? '+' : '') + fmt(value) + unit;
+          return point.marker + point.seriesName + ' <b>' + shown + '</b>';
+        }).join('<br>');
+      }},
+    xAxis: {type: 'category', data: dates, boundaryGap: bars, axisLine: {lineStyle: {color: plotColor('border')}},
+      axisTick: {show: false}, axisLabel: {color: plotColor('text-3'), fontSize: 11, formatter: v => v.slice(5).replace('-', '.')}},
+    yAxis: shortOnly ? [shortAxis] : [investorAxis, shortAxis],
     series,
   }, true);
-  document.querySelectorAll('[data-flow-for="' + id + '"]').forEach(b => b.classList.toggle('on', f[b.dataset.k] === b.dataset.v));
+  for (const button of card.querySelectorAll('button[data-k]')) {
+    button.setAttribute('aria-pressed', String(f[button.dataset.k] === button.dataset.v));
+  }
 }
+
 function drawFlow(id) {
   if (FLOW[id] || typeof echarts === 'undefined') return;
-  const s = STOCKS.find(x => x.id === id), el = document.getElementById('flowchart-' + id);
-  if (!s || !el || !s.flow || !s.flow.daily) return;
-  FLOW[id] = {d: s.flow.daily, who: 'all', mode: 'cum', unit: 'value', p: '120', chart: echarts.init(el, null, {renderer: 'canvas'})};
+  const stock = STOCKS.find(item => item.id === id);
+  const el = document.getElementById('flowchart-' + id);
+  if (!el || !stock?.flow?.daily) return;
+  const card = el.closest('.qchart-card');
+  FLOW[id] = {d: stock.flow.daily, card, view: 'investors', who: 'all', mode: 'cum', unit: 'value',
+    p: card.querySelector('select').value, chart: echarts.init(el, null, {renderer: 'canvas'})};
   renderFlow(id);
 }
 window.addEventListener('resize', () => Object.values(FLOW).forEach(f => f.chart.resize()));
@@ -1741,61 +2011,106 @@ def _won(v):
 
 
 def render_flow(f, i):
-    """수급 카드: 왼쪽 투자자별 순매수 차트(+ 공매도 잔고 비중), 오른쪽 기간별 누적 순매수·시가총액 대비·공매도 표."""
-    def group(key, options):
-        return '<div class="igroup">' + "".join(
-            f'<button data-flow-for="{i}" data-k="{key}" data-v="{v}" onclick="flowSet(\'{i}\', \'{key}\', \'{v}\')">{label}</button>'
-            for v, label in options) + "</div>"
+    """투자자별 순매수와 공매도 차트, 기간별 순매수 표와 공매도 카드."""
+    short_balance = f["short_bal"]
+    short_trade = f["short_trade"]
+    chart_id = f"flowchart-{i}"
 
-    legend = "".join(f'<span><i style="background:{color}"></i>{name}</span>'
-                     for name, color in [("외국인", "var(--series-1)"), ("기관", "var(--series-2)"), ("개인", "var(--text-2)")])
-    legend += '<span><i class="idash"></i>공매도 잔고 비중 (우)</span>'
-    left = ('<div class="qleft"><div class="ilegend">' + legend + '</div><div class="ictrl">'
-            + group("who", [("all", "전체"), ("외국인", "외국인"), ("기관", "기관"), ("개인", "개인")])
-            + group("mode", [("cum", "누적"), ("day", "일별")])
-            + group("unit", [("value", "금액(억원)"), ("volume", "수량(주)")])
-            + group("p", [("30", "30일"), ("60", "60일"), ("120", "120일")])
-            + f'</div><div id="flowchart-{i}" class="ichart"></div></div>')
+    def group(key, label, options):
+        buttons = "".join(
+            f'<button type="button" data-k="{key}" data-v="{value}" '
+            f'aria-controls="{chart_id}" aria-pressed="{str(index == 0).lower()}" '
+            f"""onclick="flowSet('{i}', '{key}', '{value}')">{text}</button>"""
+            for index, (value, text) in enumerate(options)
+        )
+        return f'<div class="igroup" role="group" aria-label="{label}">{buttons}</div>'
 
-    def tone(v):  # 한국식: 순매수·증가 빨강, 순매도·감소 파랑
-        return "up" if v > 0 else ("down" if v < 0 else "")
+    if short_balance:
+        views = group("view", "수급 차트 종류", [("investors", "투자자 순매수"), ("short", "공매도 잔고비중")])
+    else:
+        views = '<span class="qview-label">투자자 순매수</span>'
+    periods = "".join(f'<option value="{n}">{n}거래일</option>' for n in (30, 60, 120))
+    legend = "".join(
+        f'<span data-flow-legend="{name}"><i style="background:{color}"></i>{name}</span>'
+        for name, color in [("외국인", "var(--series-1)"), ("기관", "var(--series-2)"), ("개인", "var(--text-2)")]
+    )
+    if short_balance:
+        legend += '<span class="qshort-legend"><i class="idash"></i>공매도 잔고비중 (오른쪽 축)</span>'
+    filters = (
+        group("who", "투자자", [("all", "전체"), ("외국인", "외국인"), ("기관", "기관"), ("개인", "개인")])
+        + group("mode", "집계 방식", [("cum", "누적"), ("day", "일별")])
+        + group("unit", "순매수 단위", [("value", "금액(억원)"), ("volume", "수량(주)")])
+    )
+    chart = f"""
+<section class="card qchart-card" aria-labelledby="qchart-title-{i}">
+  <header class="qhead">
+    <h2 id="qchart-title-{i}">수급</h2><time datetime="{f["date"]}">{f["date"]} 기준</time>
+  </header>
+  <div class="qtoolbar">
+    {views}
+    <label>기간<select aria-controls="{chart_id}" onchange="flowSet('{i}', 'p', this.value)">{periods}</select></label>
+  </div>
+  <div class="qinvestor-controls">
+    <div class="ictrl">{filters}</div>
+    <div class="ilegend">{legend}</div>
+  </div>
+  <div class="qshort-context" aria-live="polite" hidden></div>
+  <div id="{chart_id}" class="ichart" role="img" aria-label="투자자별 누적 순매수"></div>
+  <div class="legend">누적은 선택한 기간의 첫 거래일부터 더한 값입니다. 출처는 KRX 투자자별 거래실적과 공매도입니다.</div>
+</section>"""
 
-    def num(v, fmt):
-        return '<td class="muted">—</td>' if v is None else f'<td class="{tone(v)}">{fmt(v)}</td>'
+    def number(value, spec, suffix=""):
+        return "—" if value is None else f"{value:{spec}}{suffix}".replace("-", "−")
 
-    head = "".join(f"<th>{n}D</th>" for n in FLOW_PERIODS)
-    rows = ""
-    for name in ["외국인", "기관", "개인"]:
-        v = f["rows"][name]
-        rows += (f'<tr><th>{name}</th>'
-                 + "".join(num(v[n] and v[n]["won"] / 1e8, lambda x: f"{x:+,.0f}") for n in FLOW_PERIODS)
-                 + "".join(num(v[n] and v[n]["pct"], lambda x: f"{x:+.2f}%") for n in FLOW_PERIODS) + "</tr>")
-    flows = (f'<table class="qtab"><thead><tr><th></th><th colspan="{len(FLOW_PERIODS)}" class="qgrp">누적 순매수(억원)</th>'
-             f'<th colspan="{len(FLOW_PERIODS)}" class="qgrp">÷ 시총(%)</th></tr>'
-             f'<tr><th>투자자</th>{head}{head}</tr></thead><tbody>{rows}</tbody></table>')
+    def net_table(key, caption, spec, scale=1, suffix=""):
+        head = "".join(f'<th scope="col">{n}일</th>' for n in FLOW_PERIODS)
+        rows = []
+        for name in ("외국인", "기관", "개인"):
+            values = (f["rows"][name][n] for n in FLOW_PERIODS)
+            cells = "".join(f'<td>{number(row[key] / scale if row else None, spec, suffix)}</td>' for row in values)
+            rows.append(f'<tr><th scope="row">{name}</th>{cells}</tr>')
+        hidden = "" if key == "won" else " hidden"
+        return (f'<div class="scroll" data-qnet-panel="{key}"{hidden}>'
+                f'<table class="qtab" aria-label="{caption}"><thead><tr>'
+                f'<th scope="col">투자자</th>{head}</tr></thead><tbody>{"".join(rows)}</tbody></table></div>')
 
-    later = [n for n in FLOW_PERIODS if n > 1]
-    sb, st = f["short_bal"], f["short_trade"]
-    srows = ""
-    if sb:
-        srows += (f'<tr><th>잔고비중 · Δ<small>{sb["date"]} 기준</small></th><td class="qnow">{sb["now"]:.3f}%</td>'
-                  + "".join(num(sb["chg"][n], lambda x: f"{x:+.3f}%p") for n in later) + "</tr>")
-    srows += (f'<tr><th>거래비중 · 평균<small>거래량 대비</small></th>'
-              f'<td class="qnow">{"—" if st[1] is None else f"{st[1]:.2f}%"}</td>'
-              + "".join('<td>—</td>' if st[n] is None else f'<td>{st[n]:.2f}%</td>' for n in later) + "</tr>")
-    shorts = (f'<table class="qtab qshort"><thead><tr><th>공매도(%)</th><th>현재</th>'
-              f'{"".join(f"<th>{n}D</th>" for n in later)}</tr></thead><tbody>{srows}</tbody></table>')
-
+    amount = net_table("won", "투자자별 누적 순매수 금액 (억원)", "+,.0f", 1e8)
+    ratio = net_table("pct", "투자자별 누적 순매수의 시총 대비 비율 (%)", "+.2f", suffix="%")
     streak = f'{f["streak"]}일 연속 {"순매수" if f["streak_buy"] else "순매도"}'
-    persist = (f'<p class="qnote">매집 지속성 (기관+외국인) · 최근 30일 중 순매수 <b>{f["buy_days"]}일</b> '
-               f'({f["buy_days"] / 30 * 100:.0f}%) · {streak}</p>')
-    right = f'<div class="qright"><div class="scroll">{flows}</div><div class="scroll">{shorts}</div>{persist}</div>'
-    return (f'<div class="card"><div class="qhead"><span class="sec-title">수급</span>'
-            f'<span>외국인 · 기관 누적 순매수 · 공매도 · {f["date"]} 기준</span></div>'
-            f'<div class="qsplit">{left}{right}</div>'
-            f'<div class="legend">순매수 = 매수 − 매도 · D는 거래일 · 누적은 기간 첫날부터 더한 값 · 시총 대비는 현재 시가총액 기준 · '
-            f'공매도 잔고 비중 = 공매도 잔고 ÷ 상장주식수 (2거래일 늦게 공시) · 거래비중의 현재는 당일 값, 나머지는 기간 평균 · '
-            f'출처: KRX 투자자별 거래실적 · 공매도 (넣어 주신 KRX 로그인 사용) · 종목별 프로그램 매매는 출처를 찾지 못해 넣지 않았습니다</div></div>')
+    net = f"""
+<section class="card qnet-card" aria-labelledby="qnet-title-{i}">
+  <header class="qhead">
+    <div><h2 id="qnet-title-{i}">투자자별 순매수</h2><small>기간별 누적 · 거래일 기준</small></div>
+    <div class="igroup qnet-switch" role="group" aria-label="순매수 표의 표시 단위">
+      <button type="button" aria-pressed="true" aria-controls="qnet-data-{i}" data-qnet="won" onclick="flowTableSet(this)">금액(억원)</button>
+      <button type="button" aria-pressed="false" aria-controls="qnet-data-{i}" data-qnet="pct" onclick="flowTableSet(this)">시총 대비(%)</button>
+    </div>
+  </header>
+  <div id="qnet-data-{i}">{amount}{ratio}</div>
+  <div class="qnote">기관·외국인 합산 · 최근 30일 중 <b>{f["buy_days"]}일</b> 순매수 ({f["buy_days"] / 30 * 100:.0f}%) · {streak}</div>
+  <div class="legend">시총 대비 비율은 현재 시가총액을 기준으로 계산합니다.</div>
+</section>"""
+
+    date = f'<time datetime="{short_balance["date"]}">잔고 기준 {short_balance["date"]}</time>' if short_balance else ""
+    now = f'<div><dt>현재 잔고비중</dt><dd>{short_balance["now"]:.3f}<span>%</span></dd></div>' if short_balance else ""
+    trade_now = short_trade[1]
+    trade_value = f"{trade_now:.2f}<span>%</span>" if trade_now is not None else "—"
+    change_header = '<th scope="col">잔고비중 변화 <span>(%p)</span></th>' if short_balance else ""
+    rows = []
+    for n in FLOW_PERIODS[1:]:
+        change = f'<td>{number(short_balance["chg"][n], "+.3f")}</td>' if short_balance else ""
+        rows.append(f'<tr><th scope="row">{n}일</th>{change}<td>{number(short_trade[n], ".2f")}</td></tr>')
+    shorts = f"""
+<section class="card qshort-card" aria-labelledby="qshort-title-{i}">
+  <header class="qhead"><h2 id="qshort-title-{i}">공매도</h2>{date}</header>
+  <dl class="qshort-metrics">{now}<div><dt>당일 거래비중</dt><dd>{trade_value}</dd></div></dl>
+  <div class="scroll"><table class="qtab" aria-label="기간별 공매도 지표">
+    <thead><tr><th scope="col">기간</th>{change_header}<th scope="col">평균 거래비중 <span>(%)</span></th></tr></thead>
+    <tbody>{"".join(rows)}</tbody>
+  </table></div>
+  <div class="legend">잔고비중은 상장주식수 대비 공매도 잔고이며, 2거래일 늦게 공시됩니다. 거래비중은 전체 거래량 대비 비율입니다.</div>
+</section>"""
+    return chart + net + shorts
 
 
 def _krw(v):
@@ -1852,10 +2167,12 @@ def render_reports(c):
     note = '<p class="note">리포트 목록을 받지 못해 마지막 저장본을 보여 줍니다.</p>' if r["cached"] else ""
 
     def up(v):
+        if v is None:
+            return "—"
         return f'<span class="{"good" if v >= 0 else "bad"}">{v:+.1f}%</span>'
 
     if r["avg"]:
-        avg_up = (r["avg"] / r["price"] - 1) * 100
+        avg_up = (r["avg"] / r["price"] - 1) * 100 if r["price"] else None
         v = r["views"]
         kpis = [
             ("평균 목표가", f'{r["avg"]:,.0f}원', f'현재가 대비 {up(avg_up)} · 중간값 {r["median"]:,.0f}원'),
@@ -1864,9 +2181,10 @@ def render_reports(c):
             ("투자의견", f'매수 {v["매수"]}', f'중립 {v["중립"]} · 매도 {v["매도"]} · 증권사 {r["n_brokers"]}곳'),
         ]
         tiles = "".join(f'<div class="fkpi"><small>{a}</small><b>{b}</b><small>{s}</small></div>' for a, b, s in kpis)
+        closing = f'현재가 {r["price"]:,.0f}원' if r["price"] else "현재가 자료 없음"
         summary = (f'<div class="fkpis">{tiles}</div><div class="legend" style="margin:6px 0 14px">'
                    f'최근 {REPORT_DAYS}일 안에 목표가를 낸 증권사 {r["n_brokers"]}곳의 최신 목표가 기준 · 이 기간 리포트 {r["n_reports"]}건 · '
-                   f'현재가 {r["price"]:,.0f}원</div>')
+                   f'{closing}</div>')
     else:
         summary = f'<p class="note">최근 {REPORT_DAYS}일 안에 목표가를 낸 리포트가 없습니다.</p>'
 
@@ -1895,10 +2213,51 @@ def render_reports(c):
             f'한경 컨센서스에 올라온 리포트만 포함되어 일부 증권사가 빠질 수 있습니다 · 최신 리포트 {r["last_date"]}</div></div>')
 
 
+def build_report_assets(directory):
+    """Save one small report card per company, with prior files available on source failures."""
+    rows = [entry for entry in directory["rows"] if not entry.get("builtin")]
+    directory_path = OUT / "report-data"
+    refresh = directory_path / ".refresh.json"
+    today = TODAY.strftime("%Y-%m-%d")
+    state = company_catalog.read_json(refresh)
+    results = state.get("status", {}) if state.get("date") == today else {}
+    todo = [row for row in rows if row["ticker"] not in results or not (directory_path / (row["ticker"] + ".js")).is_file()]
+
+    def fetch_report(row):
+        ticker = row["ticker"]
+        path = directory_path / (ticker + ".js")
+        stock = {"ticker": ticker, "name": row["name"]}
+        try:
+            stock["reports"] = report_summary(ticker, (row.get("quote") or {}).get("price"))
+        except (ValueError, OSError, KeyError, IndexError, TypeError) as error:
+            stock["reports_note"] = "리포트 자료를 확인하지 못했습니다."
+            print(f"  ! 리포트 {ticker}: {type(error).__name__}", flush=True)
+            if path.exists():
+                return ticker, "cached"
+        else:
+            reports = stock["reports"]
+            stock["reports_note"] = "최근 1년간 한경 컨센서스에 등록된 리포트가 없습니다." if not reports else None
+        content = json.dumps({"html": render_reports(stock)}, ensure_ascii=False, separators=(",", ":"))
+        company_catalog.write_atomic(path, f'window.dashboardReportPayload("{ticker}",{content});\n')
+        if stock.get("reports"):
+            return ticker, "available"
+        return ticker, "failed" if "reports" not in stock else "empty"
+
+    if todo:
+        print(f"  증권사 리포트: {len(todo)}개 종목 조회", flush=True)
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            results.update(executor.map(fetch_report, todo))
+        company_catalog.write_atomic(refresh, json.dumps({"date": today, "status": results}))
+    return results
+
+
 def render_rsi_badge(c):
+    if c["rsi"] is None:
+        return ""
     label, cls = rsi_zone(c["rsi"])
+    previous = num(c["rsi_prev"], 1)
     return (f'<div class="srsi {cls}"><small>RSI({RSI_N}) · 일봉</small><b>{c["rsi"]:.1f}</b><span>{label}</span>'
-            f'<small>1주 전 {c["rsi_prev"]:.1f} · {RSI_HI} 이상 과매수 · {RSI_LO} 이하 과매도</small></div>')
+            f'<small>1주 전 {previous} · {RSI_HI} 이상 과매수 · {RSI_LO} 이하 과매도</small></div>')
 
 
 def render_company(c):
@@ -1908,9 +2267,10 @@ def render_company(c):
     chg = (c["price"] / c["prev"] - 1) * 100
     tone = "var(--bad)" if chg > 0 else ("var(--series-1)" if chg < 0 else "var(--mu)")  # 한국식 색 (상승 빨강)
     flow_card = render_flow(c["flow"], c["id"]) if c["flow"] else ""
-    fcf_card = render_fcf(c)
+    fcf_card = "" if c.get("price_only") else render_fcf(c)
     note = f'<p class="note">{esc(c["note"])}</p>' if c["note"] else ""
     i = c["id"]
+    classification = f' · KRX 업종 {esc(c["sector"])}' if c.get("sector") else ""
     ranges = "".join(f'<button data-range-for="{i}" data-r="{r}" onclick="tvRange(\'{i}\', \'{r}\')">{r}</button>'
                      for r in ["1M", "3M", "6M", "YTD", "1Y", "5Y", "All"])
     intervals = "".join(f'<button data-iv-for="{i}" data-iv="{v}" onclick="tvInterval(\'{i}\', \'{v}\')">{label}</button>'
@@ -1930,11 +2290,48 @@ def render_company(c):
     return (
         f'<div class="card shead"><div class="sname"><div><b>{esc(c["name"])}</b>'
         f'<span class="sbadge">{c["ticker"]}</span><span class="smkt">{c["market"]}</span></div>'
-        f'<small>{esc(c["eng"])} · KRX 업종 {esc(c["sector"])}</small></div>'
+        f'<small>{esc(c["eng"])}{classification}</small></div>'
         f'<div class="sright"><div class="sprice"><small>현재가</small><b>{c["price"]:,.0f}원</b>'
         f'<span style="color:{tone}">{c["price"] - c["prev"]:+,.0f} ({chg:+.2f}%)</span><small>종가 기준일 {c["date"]}</small></div>'
         f'{render_rsi_badge(c)}</div></div>'
         f'{note}{chart_card}{flow_card}{fcf_card}')
+
+
+def prepare_company_catalog(companies, asof):
+    """Prepare a single searchable list and individual local stock assets."""
+    date = asof.strftime("%Y-%m-%d")
+    directory = company_catalog.load_directory(OUT, date, ENV.get("KRX_API_KEY"))
+    pinned = {entry["ticker"] for entry in companies}
+    assets = OUT / "company-data"
+    quotes = {}
+    try:
+        company_catalog.update_prices(OUT, directory, pinned)
+        for entry in directory.get("members", []):
+            ticker = entry["ticker"]
+            if ticker in pinned:
+                continue
+            cache = OUT / ".company-prices" / (ticker + ".csv")
+            try:
+                px = validate_stock_prices(pd.read_csv(cache, index_col=0, parse_dates=True))
+                stats = company_price_fields(px)
+                note = "주가·거래량 제공"
+                if stats["date"] < directory["asof"]:
+                    note += " · 마지막 저장 시세의 기준일을 확인하세요."
+                stock = {**entry, **stats, "price_only": True, "note": note, "flow": None, "fcf": None}
+                payload = json.dumps({"company": stock, "html": render_company(stock)}, ensure_ascii=False,
+                                     allow_nan=False, separators=(",", ":")).replace("</", r"<\/")
+                company_catalog.write_atomic(assets / (ticker + ".js"),
+                                             f'window.dashboardCompanyPayload("{ticker}",{payload});\n')
+                quotes[ticker] = company_catalog.stock_quote(stock)
+            except (OSError, ValueError, KeyError, TypeError) as error:
+                print(f"  ! 기업 분석 {ticker}: {type(error).__name__} · 저장 시세 확인")
+    except OSError as error:
+        print(f"  ! 기업 분석 파일 생성: {type(error).__name__}")
+    return {
+        "asof": directory.get("asof", ""),
+        "count": len(directory.get("members", [])),
+        "rows": company_catalog.directory_rows(directory, companies, assets, quotes),
+    }
 
 
 EXPORT_MONTHS = 24
@@ -2177,30 +2574,11 @@ def render_events(ev):
 
 
 def render_html(ctx):
-    sidebar, datasets = dashboard_layout.navigation(ctx["companies"])
-    v = ctx["verdicts"]
-    groups = CFG["groups"]
-    status = " · ".join(f'{g["name"]} <b style="color:{TONE[v[g["id"]]["key"]]}">{v[g["id"]]["label"]}</b>' for g in groups)
-    gcards = ""
-    for n, g in enumerate(groups):
-        gv = v[g["id"]]
-        c = gv["counts"]
-        gcards += (f'<div class="gcard" style="border-top-color:{TONE[gv["key"]]}"><small>{GROUP_NUM[n]} {g["name"]}</small>'
-                   f'<div style="color:{TONE[gv["key"]]}">{gv["label"]}</div>'
-                   f'<small>{g["labels"]["pos"]} {c["pos"]} · 중립 {c["neu"]} · {g["labels"]["neg"]} {c["neg"]}</small>'
-                   + local_views.evidence(ctx["rows"], g["id"]) + '</div>')
-
-    sections = ""
-    for n, g in enumerate(groups):
-        gv = v[g["id"]]
-        c = gv["counts"]
-        rows = "".join(render_row(r["ind"], r.get("res"), r.get("err"), r.get("note")) for r in ctx["rows"] if r["ind"]["group"] == g["id"])
-        sections += (f'<div class="ghead" id="grp-{g["id"]}">{GROUP_NUM[n]} {g["name"]}'
-                     f'<span class="pill" style="color:{TONE[gv["key"]]}">{gv["label"]}</span>'
-                     f'<small>{g["labels"]["pos"]} {c["pos"]} · 중립 {c["neu"]} · {g["labels"]["neg"]} {c["neg"]}</small></div>{rows}')
-
+    directory = ctx["company_catalog"]
+    search = company_catalog.search_markup(directory["asof"], directory["count"])
+    sidebar, datasets = dashboard_layout.navigation(ctx["companies"], search)
     return f"""<!doctype html><html lang="ko"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><title>국장 매크로 대시보드</title><style>{dashboard_theme.CSS}{CSS}{cosmetics.CSS}{local_views.CSS}{dashboard_layout.CSS}{trend_charts.CSS}</style>{dashboard_theme.BOOT}</head>
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>국장 매크로 대시보드</title><style>{dashboard_theme.CSS}{CSS}{cosmetics.CSS}{local_views.CSS}{dashboard_layout.CSS}{trend_charts.CSS}{local_views.MARKET_CSS}{company_catalog.CSS}{sector_map.CSS}</style>{dashboard_theme.BOOT}</head>
 <body><div class="dashboard-shell">
 {sidebar}
 <main class="dashboard-main">
@@ -2211,29 +2589,19 @@ def render_html(ctx):
 {datasets}
 <div class="workspace-detail">
 
-<div class="tab on" id="t1">
-<div class="card status">
-  <div><b class="big">오늘의 상태</b> · {status}</div>
-  <div class="headline">{esc(ctx["sentence"])}</div>
-  <div class="kpis">{ctx["kpis"]}</div>
-  <div class="gcards">{gcards}</div>
-  <div class="fresh">{ctx["fresh"]}</div>
-</div>
-<div class="card">
-  <div class="sec-head"><span class="sec-title">핵심 지표 위치</span><span>현재 구간 · ★ 먼저 볼 지표</span></div>
-  <div class="scroll"><div class="grid">{sections}</div></div>
-  <div class="legend">※ <b>위치</b>: 기준 기간 중 지금 값보다 낮거나 같았던 날의 비율 (0% = 기간 중 최저, 100% = 최고)<br>
-  ※ <b>구간 색</b>: 빨강 스트레스 · 주황 경계 · 노랑 주의 · 회색 중립 · 파랑 안정 · 초록 양호 · 진한 초록 과열 (빨강은 '매도'가 아니라 '스트레스가 크다'는 뜻)<br>
-  ※ 시장 내부의 종목 비율은 코스피·코스닥 혼합 {ctx["uni_n"]}종목 표본 기준입니다.</div>
-</div>
-</div>
+{render_market_assessment(ctx)}
+
+{sector_map.markup(ctx["sector_map"])}
 
 {"".join(f'<div class="tab" id="s-{c["id"]}">{render_company(c)}{ctx["apr_comparison"] if c["id"] == "apr" else ""}</div>' for c in ctx["companies"])}
+
+<div class="tab" id="s-catalog"><p class="card company-load-message">종목을 검색해 선택하세요.</p></div>
 
 <div class="tab" id="t7">
 {ctx["events_html"]}
 </div>
 {"".join(f'<div class="tab" id="r-{esc(c["id"])}">{render_reports(c)}</div>' for c in ctx["companies"])}
+<div class="tab" id="r-catalog"><p class="card company-load-message">종목을 검색해 리포트를 열어 보세요.</p></div>
 <div class="tab" id="t3">
 <div class="card">
   <div class="sec-head"><span class="sec-title">삼전닉스 뉴스</span><span>최근 7일 · 주요 언론사만 · 같은 내용은 하나로 묶음 (Google 뉴스)</span></div>
@@ -2255,18 +2623,6 @@ def render_html(ctx):
 
 <div class="tab" id="cosmetics">
 {ctx["cosmetics_html"]}
-</div>
-
-<div class="tab" id="t2">
-<div class="card">
-  <div class="sec-head"><span class="sec-title">기간별 수익률</span><span>각 자산의 최신 거래일 기준</span></div>
-  <div class="scroll">{ctx["period_html"]}</div>
-  <div class="legend">※ 1D 전 거래일 · 1W 7일 전 · 1M 1개월 전 · YTD 전년 말 · 1Y 1년 전 (휴장이면 직전 거래일) · 52주 종가 최고 대비 −5% 이내 흰색, −5~−15% 주황, −15% 초과 빨강</div>
-</div>
-<div class="card">
-  <div class="sec-head"><span class="sec-title">섹터 흐름</span><span>월별 섹터 ETF 수익률 − {esc(CFG["sectors"]["benchmark"]["name"])} 수익률 (%p) · 초록 = 시장보다 강함 · 최근 3개월 합계 순 · * 진행 중인 달</span></div>
-  <div class="scroll">{ctx["sector_html"]}</div>
-</div>
 </div>
 
 </div>
@@ -2294,10 +2650,11 @@ document.querySelectorAll('.dataset-list button').forEach(b=>b.onclick=()=>{{
   selectWorkspaceView(b);
   if (b.dataset.t === 't4' && typeof drawCredit === 'function') {{ drawCredit(); creditCharts.forEach(c => c.resize()); }}
   if (b.dataset.t === 'memory' && typeof drawMemory === 'function') drawMemory();
+  if (b.dataset.t === 'sector-heatmap') drawSectorHeatmap();
   if (b.dataset.t === 't5' && typeof drawExports === 'function') {{ drawExports(); exportChart && exportChart.resize(); }}
   if (b.dataset.t === 't5' && typeof drawSemiconductors === 'function') {{ drawSemiconductors(); }}
   if (b.dataset.t === 'cosmetics' && typeof drawCosmetics === 'function') {{ drawCosmetics(); }}
-  if (b.dataset.t.startsWith('s-') && typeof drawStock === 'function') {{
+  if (b.dataset.t.startsWith('s-') && b.dataset.t !== 's-catalog' && typeof drawStock === 'function') {{
     const id = b.dataset.t.slice(2);
     drawStock(id);
     // 숨어 있는 동안 창 크기가 바뀌면 너비 0으로 줄어 있으므로 다시 맞춘다.
@@ -2408,6 +2765,8 @@ document.querySelectorAll('.dataset-list button').forEach(b=>b.onclick=()=>{{
   apply();
 }})();
 </script>
+{company_catalog.script(directory["rows"])}
+{sector_map.script(ctx["sector_map"])}
 {dashboard_theme.SWITCH}</body></html>"""
 
 
@@ -2422,9 +2781,6 @@ def main():
     px = yahoo(idx_tickers, "2005-01-01")
     uni = yahoo(CFG["breadth_universe"], (TODAY - pd.Timedelta(days=800)).date())
     uni = uni.dropna(axis=1, how="all").ffill(limit=3)
-    sc = CFG["sectors"]
-    spx = yahoo([sc["benchmark"]["ticker"]] + [i["ticker"] for i in sc["items"]],
-                (TODAY - pd.DateOffset(months=sc["months"] + 2)).date())
     kospi = px["^KS11"].dropna()
 
     rows = []
@@ -2449,8 +2805,8 @@ def main():
         s = px[t].dropna()
         return (s.iloc[-1] / s[s.index > s.index[-1] - pd.Timedelta(days=365)].max() - 1) * 100
 
-    kp = [f"코스피 52주 종가 고점 대비 <b>{num(from_high('^KS11'), 1, '%', True)}</b>",
-          f"코스닥 52주 종가 고점 대비 <b>{num(from_high('^KQ11'), 1, '%', True)}</b>"]
+    kp = [f"코스피 52주 종가 고점 대비 {market_summary_number(from_high('^KS11'), 1, '%')}",
+          f"코스닥 52주 종가 고점 대비 {market_summary_number(from_high('^KQ11'), 1, '%')}"]
     for key, label, d, unit in [("breadth200", "200일선 위", 0, "%"), ("vix", "VIX", 1, ""), ("usdkrw", "원/달러", 1, "")]:
         if by_id.get(key):
             r = by_id[key]
@@ -2460,27 +2816,13 @@ def main():
         r = by_id.get(key)
         if r:
             ind = next(i for i in inds if i["id"] == key)
-            color = COLORS[r["zone"]["color"]]
-            flow.append(f'<a href="#ind-{key}">{label} <b>{num(r["value"], ind["decimals"], ind["unit"])}</b> '
+            color = market_verdict_tone(r["zone"]["signal"])
+            value = r["value"]
+            decimals, unit = ind["decimals"], ind["unit"]
+            amount = (market_summary_number(value, decimals, unit) if key == "foreign_net"
+                      else f'<b>{num(value, decimals, unit)}</b>')
+            flow.append(f'<a href="#ind-{key}">{label} {amount} '
                         f'<span style="color:{color}">{esc(r["zone"]["label"])}</span></a>')
-    stale = [f'{r["ind"]["name"]} {r["res"]["date"]:%Y-%m}' for r in rows
-             if r.get("res") and r["ind"]["freq"] != "daily"]
-    pending = [r["ind"]["name"] for r in rows if not r.get("res")]
-    fresh = f"데이터 기준 <b>{kospi.index[-1]:%Y-%m-%d}</b> (코스피)"
-    if stale:
-        fresh += " · 월간 최신: " + ", ".join(stale)
-    if pending:
-        fresh += " · <b>미연결: " + ", ".join(pending) + "</b>"
-    delayed = [r["ind"]["name"] for r in rows if r.get("res", {}).get("stale")]
-    if delayed:
-        fresh += " · <b>갱신 지연 (판정 제외): " + ", ".join(delayed) + "</b>"
-
-    try:
-        sector, partial = sector_flow(spx)
-        sector_html = render_sectors(sector, partial)
-    except Exception as e:
-        sector_html = f'<p class="note">섹터 데이터를 계산하지 못했습니다 ({e.__class__.__name__}).</p>'
-    period = period_returns(px)
     news_ctx = collect_news()
     try:
         ev = events.collect()
@@ -2493,6 +2835,11 @@ def main():
     except Exception as e:  # 회사 탭이 실패해도 나머지 대시보드는 만든다
         companies = []
         print(f"  ! 회사 탭: {e.__class__.__name__}")
+    catalog = prepare_company_catalog(companies, kospi.index[-1])
+    try:
+        build_report_assets(catalog)
+    except (OSError, ValueError) as error:
+        print(f"  ! 리포트 파일 갱신: {type(error).__name__}")
     exports, export_note = None, None
     try:
         exports = export_data()
@@ -2522,9 +2869,8 @@ def main():
     ctx = {
         "apr_comparison": local_views.apr_comparison(cosmetics_data),
         "rows": rows, "verdicts": verdicts, "sentence": summary_sentence(verdicts),
-        "kpis": " · ".join(kp) + (f'<div class="flow">수급·자금 · {" · ".join(flow)}</div>' if flow else ""), "fresh": fresh, "asof": kospi.index[-1], "generated": datetime.now(ZoneInfo(KST)),
+        "kpis": " · ".join(kp) + (f'<div class="flow">수급·자금 · {" · ".join(flow)}</div>' if flow else ""), "asof": kospi.index[-1], "generated": datetime.now(ZoneInfo(KST)),
         "uni_n": uni.shape[1],
-        "period_html": render_period(period), "sector_html": sector_html,
         "news_html": render_news(news_ctx),
         "events_html": render_events(ev),
         "credit_html": render_credit(credit),
@@ -2532,8 +2878,9 @@ def main():
         "semiconductor_js": cosmetics.script(exports["products"], namespace="semiconductors") if exports else "",
         "cosmetics_html": cosmetics.render(cosmetics_data, cosmetics_note),
         "cosmetics_js": cosmetics.script(cosmetics_data),
-        "companies": companies,
-        "stock_js": STOCK_JS.replace("__DATA__", json.dumps(companies, ensure_ascii=False, allow_nan=False).replace("</", r"<\/")) if companies else "",
+        "companies": companies, "company_catalog": catalog,
+        "sector_map": sector_map.load_snapshot(OUT, kospi.index[-1].strftime("%Y-%m-%d"), ENV),
+        "stock_js": STOCK_JS.replace("__DATA__", json.dumps(companies, ensure_ascii=False, allow_nan=False).replace("</", r"<\/")),
         "export_js": EXPORT_JS.replace("__DATA__", json.dumps(exports, ensure_ascii=False, default=float, allow_nan=False).replace("</", r"<\/")) if exports else "",
         "credit_js": trend_charts.SCRIPT.replace("__DATA__", json.dumps(credit, ensure_ascii=False, allow_nan=False).replace("</", r"<\/")),
     }
