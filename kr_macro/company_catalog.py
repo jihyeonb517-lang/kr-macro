@@ -70,22 +70,37 @@ def market_members(trades, metadata, market, suffix, limit):
 def load_directory(out, date, key):
     path = out / ".company-directory.json"
     cached = read_json(path)
-    if cached.get("asof", "") >= date or not key:
+    cached_date = cached.get("asof", "")
+    if cached_date >= date or not key:
         return cached
+
     feeds = [f"{prefix}_{kind}" for _, _, prefix, _ in MARKETS for kind in ("bydd_trd", "isu_base_info")]
+    end = pd.Timestamp(date)
     try:
         with ThreadPoolExecutor(max_workers=len(feeds)) as executor:
-            market_rows = list(executor.map(lambda feed: krx_rows(feed, date, key), feeds))
-        members = []
-        for index, (market, suffix, _, limit) in enumerate(MARKETS):
-            trades, metadata = market_rows[index * 2:index * 2 + 2]
-            members += market_members(trades, metadata, market, suffix, limit)
-        result = {"asof": date, "members": members}
-        write_atomic(path, json.dumps(result, ensure_ascii=False, separators=(",", ":")))
-        return result
-    except (requests.RequestException, OSError, ValueError, KeyError, TypeError) as error:
+            for day in pd.bdate_range(end=end, periods=5)[::-1]:
+                candidate = day.strftime("%Y-%m-%d")
+                if candidate <= cached_date:
+                    return cached
+                try:
+                    market_rows = list(executor.map(lambda feed: krx_rows(feed, candidate, key), feeds))
+                    members = []
+                    for index, (market, suffix, _, limit) in enumerate(MARKETS):
+                        trades, metadata = market_rows[index * 2:index * 2 + 2]
+                        members += market_members(trades, metadata, market, suffix, limit)
+                except ValueError:
+                    # Intraday, before the close data is finalized, or on an exchange holiday.
+                    continue
+                result = {"asof": candidate, "members": members}
+                write_atomic(path, json.dumps(result, ensure_ascii=False, separators=(",", ":")))
+                if candidate != date:
+                    print(f"  기업 분석: KRX 확정 자료 {candidate} 기준", flush=True)
+                return result
+    except (requests.RequestException, OSError, KeyError, TypeError) as error:
         print(f"  ! 기업 분석 종목 목록: {type(error).__name__} · 마지막 저장 목록 사용")
         return cached
+    print("  ! 기업 분석 종목 목록: 최근 KRX 확정 자료 없음 · 마지막 저장 목록 사용")
+    return cached
 
 
 def update_prices(out, directory, included):
