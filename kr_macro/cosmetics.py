@@ -9,11 +9,12 @@ import numpy as np
 import pandas as pd
 
 
-def collect(output, today, config, fetch_month):
+def collect(output, today, config, fetch_month, *, cache_prefix="cosmetics_exports"):
     items = config["items"]
     groups = {item["id"]: item["hs"] for item in items}
-    signature = hashlib.sha256(json.dumps(groups, sort_keys=True).encode()).hexdigest()[:12]
-    cache = Path(output) / f".cosmetics_exports_{signature}.csv"
+    signature_input = [groups, config["classification"]] if "classification" in config else groups
+    signature = hashlib.sha256(json.dumps(signature_input, sort_keys=True).encode()).hexdigest()[:12]
+    cache = Path(output) / f".{cache_prefix}_{signature}.csv"
     data = pd.read_csv(cache, index_col=0) if cache.exists() else pd.DataFrame()
     # 분기별 전년 비교를 위해 시작하는 분기도 온전히 받는다.
     first = (today.to_period("M") - 48).asfreq("Q").asfreq("M", "start")
@@ -34,7 +35,7 @@ def collect(output, today, config, fetch_month):
             notes.append(f"{month} 자료 갱신 실패 ({exc.__class__.__name__}) · 저장된 자료 기준")
             break
         if position % 6 == 0 or position == len(todo):
-            print(f"  뷰티·의료 수출 {position}/{len(todo)}개월 확인", flush=True)
+            print(f'  {config.get("title", "뷰티·의료 수출")} {position}/{len(todo)}개월 확인', flush=True)
     if fetched:
         updates = pd.DataFrame.from_dict(fetched, orient="index")
         data.update(updates)
@@ -44,7 +45,7 @@ def collect(output, today, config, fetch_month):
         temporary.replace(cache)
     available = data.dropna()
     if available.empty:
-        raise ValueError("화장품 수출 데이터가 비어 있습니다")
+        raise ValueError("품목별 수출 데이터가 비어 있습니다")
     last = available.index[-1]
     data = data.loc[:last]
     if data.isna().any(axis=None):
@@ -52,6 +53,7 @@ def collect(output, today, config, fetch_month):
     return {
         "months": list(data.index), "asof": last, "updated": today.strftime("%Y-%m-%d"),
         "notes": notes,
+        **{field: config[field] for field in ("groups", "years") if field in config},
         "items": [
             {**item, "values": [None if pd.isna(v) else float(v) for v in data[item["id"]]]}
             for item in items
@@ -63,6 +65,7 @@ CSS = """
 .cosm-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap}
 .cosm-head h2{font-size:17px;margin:0 0 7px}.cosm-source,.cosm-updated{font-size:12px;color:var(--mu)}
 .cosm-controls,.cosm-products{display:flex;flex-wrap:wrap;gap:8px;margin:18px 0}
+.cosm-products [hidden]{display:none}
 .cosm-controls .igroup{margin:0}.cosm-btn{font:inherit;font-size:12px;color:var(--text-2);cursor:pointer;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:8px 14px}
 .cosm-btn:hover{color:var(--text);border-color:var(--accent)}.cosm-btn.on{color:var(--accent);border-color:var(--accent);background:var(--accent-soft)}
 .cosm-frame{border:1px solid var(--border);border-radius:14px;padding:14px 10px 4px;background:var(--bg)}
@@ -79,10 +82,24 @@ CSS = """
 def render(data, note=None, *, namespace="cosmetics", title="수출 데이터"):
     if data is None:
         return f'<p class="note">{html.escape(note or "화장품 수출 자료를 받지 못했습니다.")}</p>'
+    groups = data.get("groups", [])
+    first_group = groups[0]["id"] if groups else None
+    first_year = data.get("years", 1)
+    group_buttons = "".join(
+        f'<button type="button" class="cosm-btn{" on" if i == 0 else ""}" data-cosm-group="{html.escape(group["id"])}" '
+        f'aria-pressed="{"true" if i == 0 else "false"}">{html.escape(group["name"])}</button>'
+        for i, group in enumerate(groups))
+    group_controls = f'<div class="cosm-products" role="group" aria-label="수출 품목군">{group_buttons}</div>' if groups else ""
+    year_buttons = "".join(
+        f'<button class="cosm-btn{" on" if year == first_year else ""}" data-cosm-years="{year}" '
+        f'aria-pressed="{"true" if year == first_year else "false"}">{year}년</button>'
+        for year in (1, 2, 3))
     products = "".join(
         f'<button class="cosm-btn{" on" if i == 0 else ""}" data-cosm-product="{html.escape(item["id"])}" '
-        f'aria-pressed="{"true" if i == 0 else "false"}">{html.escape(item["name"])}</button>'
+        f'aria-pressed="{"true" if i == 0 else "false"}"{" hidden" if item.get("group") != first_group else ""}>'
+        f'{html.escape(item.get("label", item["name"]))}</button>'
         for i, item in enumerate(data["items"]))
+    product_controls = f'<div class="cosm-products" role="group" aria-label="세부 품목">{products}</div>'
     notes = "".join(f'<p class="note">{html.escape(n)}</p>' for n in data["notes"])
     return f"""
 <div class="card" id="{html.escape(namespace)}-panel">
@@ -91,6 +108,8 @@ def render(data, note=None, *, namespace="cosmetics", title="수출 데이터"):
     <div class="cosm-updated">업데이트 {data["updated"]} · 월별 자료 {data["asof"]}까지</div>
   </div>
   {notes}
+  {group_controls}
+  {product_controls if groups else ""}
   <div class="cosm-controls">
     <div class="igroup">
       <button class="cosm-btn on" data-cosm-period="monthly" aria-pressed="true">월별</button>
@@ -101,12 +120,10 @@ def render(data, note=None, *, namespace="cosmetics", title="수출 데이터"):
       <button class="cosm-btn" data-cosm-view="table" aria-pressed="false">표</button>
     </div>
     <div class="igroup">
-      <button class="cosm-btn on" data-cosm-years="1" aria-pressed="true">1년</button>
-      <button class="cosm-btn" data-cosm-years="2" aria-pressed="false">2년</button>
-      <button class="cosm-btn" data-cosm-years="3" aria-pressed="false">3년</button>
+      {year_buttons}
     </div>
   </div>
-  <div class="cosm-products">{products}</div>
+  {product_controls if not groups else ""}
   <div class="cosm-frame">
     <div class="cosm-title" id="{html.escape(namespace)}-title" data-cosm-role="title" aria-live="polite"></div>
     <div class="cosm-description" id="{html.escape(namespace)}-description" data-cosm-role="description"></div>
@@ -124,7 +141,9 @@ def render(data, note=None, *, namespace="cosmetics", title="수출 데이터"):
 JS = r"""
 const COSMETICS = __DATA__;
 const cosmeticsRoot = document.getElementById(__ROOT_ID__);
-const cosmeticsState = {product: COSMETICS.items[0].id, period: 'monthly', view: 'chart', years: 1, chart: null, ready: false};
+const cosmeticsState = {group: COSMETICS.groups?.[0].id, product: COSMETICS.items[0].id, period: 'monthly',
+  view: 'chart', years: COSMETICS.years || 1, chart: null, ready: false};
+const cosmeticsControls = '[data-cosm-group], [data-cosm-product], [data-cosm-period], [data-cosm-view], [data-cosm-years]';
 function cosmeticsPoints(item, period, years) {
   const values = new Map(COSMETICS.months.map((month, i) => [month, item.values[i]]));
   let points;
@@ -160,35 +179,50 @@ function cosmeticsPercent(value) {
   return value === null ? '—' : (value > 0 ? '+' : '') + value.toFixed(1) + '%';
 }
 function cosmeticsOption(points) {
+  const increase = plotColor('bad');
+  const decrease = plotColor('accent');
+  const neutral = plotColor('text-3');
+  const trend = plotColor('series-3');
+  const yoyColor = value => value > 0 ? increase : value < 0 ? decrease : neutral;
   return {
     animation: false, backgroundColor: 'transparent',
     grid: {left: 76, right: 72, top: 65, bottom: 42},
-    legend: {top: 16, data: ['전년 대비 (%)', '수출액 (백만 달러)'], textStyle: {color: plotColor('text-3'), fontSize: 11}},
+    legend: {top: 16, data: ['전년 대비 (%)', '수출액 (백만 달러)'], textStyle: {color: neutral, fontSize: 11}},
     tooltip: {
       trigger: 'axis', backgroundColor: plotColor('surface'), borderColor: plotColor('border'),
       textStyle: {color: plotColor('text'), fontSize: 12},
       formatter: rows => {
         const point = points[rows[0].dataIndex];
-        return point.key + '<br>수출액 <b>' + cosmeticsAmount(point.amount) + ' 백만 달러</b><br>전년 대비 <b>' + cosmeticsPercent(point.yoy) + '</b>';
+        const color = yoyColor(point.yoy);
+        return point.key + '<br>수출액 <b>' + cosmeticsAmount(point.amount) + ' 백만 달러</b>' +
+          '<br>전년 대비 <b style="color:' + color + '">' + cosmeticsPercent(point.yoy) + '</b>';
       },
     },
     xAxis: {type: 'category', data: points.map(point => point.label),
-      axisLine: {lineStyle: {color: plotColor('border')}}, axisTick: {alignWithLabel: true},
-      axisLabel: {color: plotColor('text-3'), fontSize: 11, hideOverlap: true}},
+      axisLine: {onZero: false, lineStyle: {color: plotColor('border')}}, axisTick: {alignWithLabel: true},
+      axisLabel: {color: neutral, fontSize: 11, hideOverlap: true}},
     yAxis: [
-      {type: 'value', name: '백만 달러', min: 0, nameTextStyle: {color: plotColor('text-3')},
-        axisLabel: {color: plotColor('text-3'), formatter: value => value.toLocaleString('ko-KR')},
+      {type: 'value', name: '백만 달러', min: 0, nameTextStyle: {color: neutral},
+        axisLabel: {color: neutral, formatter: value => value.toLocaleString('ko-KR')},
         splitLine: {lineStyle: {color: plotColor('grid')}}},
-      {type: 'value', name: '전년 대비', nameTextStyle: {color: plotColor('text-3')},
-        axisLabel: {color: plotColor('text-3'), formatter: value => (value > 0 ? '+' : '') + value + '%'},
+      {type: 'value', name: '전년 대비', scale: false, nameTextStyle: {color: neutral},
+        axisLabel: {color: neutral,
+          formatter: value => value === 0 ? '{zero|0%}' : (value > 0 ? '+' : '') + value + '%',
+          rich: {zero: {color: plotColor('text-2'), fontWeight: 700}}},
         splitLine: {show: false}},
     ],
     series: [
       {name: '수출액 (백만 달러)', type: 'bar', data: points.map(point => point.amount), barMaxWidth: 60,
         itemStyle: {color: plotColor('bar')}},
-      {name: '전년 대비 (%)', type: 'line', yAxisIndex: 1, data: points.map(point => point.yoy),
+      {name: '전년 대비 (%)', type: 'line', yAxisIndex: 1,
+        data: points.map(({yoy}) => yoy === null ? null : {value: yoy, itemStyle: {color: yoyColor(yoy)}}),
         connectNulls: false, symbol: 'circle', symbolSize: 7, smooth: false,
-        lineStyle: {color: plotColor('text-3'), width: 2}, itemStyle: {color: plotColor('bad')}},
+        lineStyle: {color: trend, width: 2.5}, itemStyle: {color: trend},
+        markLine: {
+          silent: true, symbol: 'none', label: {show: false},
+          lineStyle: {color: neutral, width: 1, type: 'dashed', opacity: 0.75},
+          data: [{yAxis: 0}],
+        }},
     ],
   };
 }
@@ -197,7 +231,8 @@ function renderCosmetics() {
   const item = COSMETICS.items.find(item => item.id === state.product);
   const points = cosmeticsPoints(item, state.period, state.years);
   cosmeticsRoot.querySelector('[data-cosm-role="title"]').textContent = item.name + ' · 전국';
-  cosmeticsRoot.querySelector('[data-cosm-role="description"]').textContent = 'HS ' + item.hs.join(', ') + ' · ' + (state.period === 'monthly' ? '월별' : '분기별') + ' · 최근 ' + state.years + '년';
+  const classification = item.hs.length ? 'HS ' + item.hs.join(', ') : '관세청 수출 성질별';
+  cosmeticsRoot.querySelector('[data-cosm-role="description"]').textContent = classification + ' · ' + (state.period === 'monthly' ? '월별' : '분기별') + ' · 최근 ' + state.years + '년';
   cosmeticsRoot.querySelector('[data-cosm-role="scope"]').textContent = item.scope || '';
   const chartElement = cosmeticsRoot.querySelector('[data-cosm-role="chart"]');
   const tableElement = cosmeticsRoot.querySelector('[data-cosm-role="table"]');
@@ -227,7 +262,11 @@ function renderCosmetics() {
     tableElement.hidden = false;
     chartUnavailable(cosmeticsRoot.id);
   }
-  cosmeticsRoot.querySelectorAll('[data-cosm-product], [data-cosm-period], [data-cosm-view], [data-cosm-years]').forEach(button => {
+  cosmeticsRoot.querySelectorAll(cosmeticsControls).forEach(button => {
+    if (button.dataset.cosmProduct && COSMETICS.groups) {
+      const product = COSMETICS.items.find(item => item.id === button.dataset.cosmProduct);
+      button.hidden = product.group !== state.group;
+    }
     const selected = Object.entries(button.dataset).every(([key, value]) => {
       const field = key.replace('cosm', '').toLowerCase();
       return String(state[field]) === value;
@@ -238,10 +277,13 @@ function renderCosmetics() {
 }
 function drawCosmetics() {
   if (!cosmeticsState.ready) {
-    cosmeticsRoot.querySelectorAll('[data-cosm-product], [data-cosm-period], [data-cosm-view], [data-cosm-years]').forEach(button => {
+    cosmeticsRoot.querySelectorAll(cosmeticsControls).forEach(button => {
       button.addEventListener('click', () => {
         Object.entries(button.dataset).forEach(([key, value]) => {
           const field = key.replace('cosm', '').toLowerCase();
+          if (field === 'group' && value !== cosmeticsState.group) {
+            cosmeticsState.product = COSMETICS.items.find(item => item.group === value).id;
+          }
           cosmeticsState[field] = field === 'years' ? Number(value) : value;
         });
         renderCosmetics();

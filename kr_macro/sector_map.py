@@ -135,6 +135,30 @@ CSS = """
 """
 
 
+def flow_etf_panels(snapshot):
+    rows = snapshot.get("rows", [])
+    if not rows:
+        return '<div class="tab" id="investor-flow"><p class="card">조회할 수 있는 섹터 ETF가 없습니다.</p></div>'
+
+    asof = escape(snapshot["asof"])
+    panels = []
+    for row in rows:
+        ticker = escape(row["ticker"], quote=True)
+        sector = escape(row["sector"])
+        change = row["change"]
+        direction = "up" if change > 0 else "down" if change < 0 else "flat"
+        panels.append(
+            f'<div class="tab flow-etf" id="flow-{ticker}"><section class="card">'
+            f'<p class="flow-etf-date">{ticker} · {sector} · <time datetime="{asof}">{asof}</time> KRX 기준</p>'
+            '<dl class="flow-etf-facts">'
+            f'<div><dt>종가</dt><dd>{row["close"]:,}원</dd></div>'
+            f'<div><dt>전일 대비</dt><dd data-change="{direction}">{change:+.2f}%</dd></div>'
+            f'<div><dt>시가총액</dt><dd>{row["cap"] / 1e8:,.0f}억 원</dd></div>'
+            '</dl></section></div>'
+        )
+    return "".join(panels)
+
+
 def markup(snapshot):
     tab = '<div class="tab" id="sector-heatmap">'
     rows = snapshot.get("rows", [])

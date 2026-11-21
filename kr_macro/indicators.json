@@ -2,13 +2,258 @@
   "_설명": "구간(zones)·의미 문구·판정 신호 설정. 이 파일만 고치면 대시보드와 엑셀에 반영됩니다. API 키는 여기에 넣지 말고 .env에 넣습니다. zones는 위에서부터 '현재값 < max'이면 그 구간, max가 null이면 마지막 구간. signal: +1 우호, 0 중립, -1 부담. color: red, orange, yellow, gray, blue, green, dkgreen. better: 지표가 어느 쪽으로 움직여야 증시에 좋은지(higher/lower).",
 
   "groups": [
-    {"id": "money",     "name": "돈의 환경",   "labels": {"pos": "우호", "neu": "중립", "neg": "부담"}},
-    {"id": "economy",   "name": "경기",        "labels": {"pos": "양호", "neu": "중립", "neg": "약화"}},
-    {"id": "internals", "name": "시장 내부",   "labels": {"pos": "강함", "neu": "보통", "neg": "약함"}},
-    {"id": "sentiment", "name": "심리 · 변동성", "labels": {"pos": "안정", "neu": "중립", "neg": "공포 쪽"}}
+    {"id": "money",     "name": "금리·환율",   "labels": {"pos": "우호", "neu": "중립", "neg": "부담"}},
+    {"id": "economy",   "name": "경기·업황",        "labels": {"pos": "양호", "neu": "중립", "neg": "약화"}},
+    {"id": "internals", "name": "추세·수급",   "labels": {"pos": "강함", "neu": "보통", "neg": "약세"}},
+    {"id": "sentiment", "name": "변동성·투자심리", "labels": {"pos": "안정", "neu": "중립", "neg": "불안"}},
+    {"id": "financial_stability", "name": "금융 안정", "labels": {"pos": "안정", "neu": "중립", "neg": "불안"}}
   ],
 
   "indicators": [
+    {
+      "id": "sofr_iorb",
+      "name": "SOFR − IORB",
+      "sub": "같은 날의 미국 국채 담보 익일물 조달금리에서 지급준비금 이자율을 뺀 값",
+      "calc": {
+        "src": "fred_spread",
+        "a": "SOFR",
+        "b": "IORB",
+        "scale": 100
+      },
+      "freq": "daily",
+      "comparison_observations": 20,
+      "unit": " bp",
+      "decimals": 1,
+      "pct_since": "2021-07-29",
+      "range": [
+        -30,
+        50
+      ],
+      "sources": {
+        "SOFR": "https://fred.stlouisfed.org/series/SOFR",
+        "IORB": "https://fred.stlouisfed.org/series/IORB"
+      },
+      "zones": [
+        {
+          "max": 0,
+          "label": "완화",
+          "signal": 1,
+          "color": "blue",
+          "meaning": "담보부 단기 조달금리가 지급준비금 이자율보다 낮음"
+        },
+        {
+          "max": 5,
+          "label": "중립",
+          "signal": 0,
+          "color": "gray",
+          "meaning": "두 금리의 차이가 0bp에 가까움"
+        },
+        {
+          "max": null,
+          "label": "조달 부담",
+          "signal": -1,
+          "color": "red",
+          "meaning": "담보부 단기 조달금리가 지급준비금 이자율보다 높음"
+        }
+      ],
+      "group": "financial_stability",
+      "better": "lower"
+    },
+    {
+      "id": "hy_credit",
+      "name": "하이일드 신용 스프레드",
+      "sub": "미국 투기등급 회사채 가산금리 · 글로벌 신용 위험 · bp로 환산",
+      "calc": {
+        "src": "fred",
+        "series": "BAMLH0A0HYM2",
+        "scale": 100
+      },
+      "freq": "daily",
+      "comparison_observations": 20,
+      "unit": " bp",
+      "decimals": 1,
+      "star": true,
+      "pct_since": "2023",
+      "range": [
+        200,
+        900
+      ],
+      "sources": {
+        "ICE BofA 하이일드 스프레드": "https://fred.stlouisfed.org/series/BAMLH0A0HYM2"
+      },
+      "zones": [
+        {
+          "max": 350,
+          "label": "정상",
+          "color": "blue",
+          "signal": 1,
+          "meaning": "신용시장 안정"
+        },
+        {
+          "max": 450,
+          "label": "주의",
+          "color": "yellow",
+          "signal": 0,
+          "meaning": "신용 위험 경계"
+        },
+        {
+          "max": 600,
+          "label": "스트레스",
+          "color": "orange",
+          "signal": -1,
+          "meaning": "신용 경색 조짐"
+        },
+        {
+          "max": null,
+          "label": "위기",
+          "color": "red",
+          "signal": -1,
+          "meaning": "신용 위기 국면"
+        }
+      ],
+      "group": "financial_stability",
+      "better": "lower"
+    },
+    {
+      "id": "nfci",
+      "name": "시카고 연은 금융여건지수(NFCI)",
+      "sub": "미국 금융여건의 주별 지수 · 장기 평균 0, 플러스는 평균보다 긴축적",
+      "calc": {
+        "src": "fred",
+        "series": "NFCI"
+      },
+      "freq": "weekly",
+      "unit": "",
+      "decimals": 2,
+      "change_decimals": 3,
+      "pct_since": "1971",
+      "range": [
+        -2,
+        3
+      ],
+      "sources": {
+        "시카고 연은 NFCI": "https://fred.stlouisfed.org/series/NFCI"
+      },
+      "zones": [
+        {
+          "max": -0.25,
+          "label": "완화",
+          "signal": 1,
+          "color": "blue",
+          "meaning": "금융여건이 장기 평균보다 완화적"
+        },
+        {
+          "max": 0.25,
+          "label": "중립",
+          "signal": 0,
+          "color": "gray",
+          "meaning": "금융여건이 장기 평균 근처"
+        },
+        {
+          "max": null,
+          "label": "긴축",
+          "signal": -1,
+          "color": "red",
+          "meaning": "금융여건이 장기 평균보다 긴축적"
+        }
+      ],
+      "group": "financial_stability",
+      "better": "lower"
+    },
+    {
+      "id": "stlfsi",
+      "name": "세인트루이스 연은 금융스트레스지수",
+      "sub": "금리·스프레드 등으로 계산하는 주별 금융스트레스 · 장기 평균 0",
+      "calc": {
+        "src": "fred",
+        "series": "STLFSI4"
+      },
+      "freq": "weekly",
+      "unit": "",
+      "decimals": 2,
+      "pct_since": "1993-12-31",
+      "range": [
+        -2,
+        3
+      ],
+      "sources": {
+        "세인트루이스 연은 STLFSI4": "https://fred.stlouisfed.org/series/STLFSI4"
+      },
+      "zones": [
+        {
+          "max": -0.25,
+          "label": "낮은 스트레스",
+          "signal": 1,
+          "color": "blue",
+          "meaning": "금융스트레스가 장기 평균보다 낮음"
+        },
+        {
+          "max": 0.25,
+          "label": "중립",
+          "signal": 0,
+          "color": "gray",
+          "meaning": "금융스트레스가 장기 평균 근처"
+        },
+        {
+          "max": null,
+          "label": "높은 스트레스",
+          "signal": -1,
+          "color": "red",
+          "meaning": "금융스트레스가 장기 평균보다 높음"
+        }
+      ],
+      "group": "financial_stability",
+      "better": "lower"
+    },
+    {
+      "id": "bank_lending",
+      "name": "은행 대출태도(순긴축)",
+      "sub": "미국 연준 SLOOS · 대형·중견기업 대출 기준을 강화한 은행 비율에서 완화한 은행 비율을 뺀 값",
+      "calc": {
+        "src": "fred",
+        "series": "DRTSCILM"
+      },
+      "freq": "quarterly",
+      "comparison_months": 12,
+      "stale_days": 150,
+      "date_label": "조사 기준일",
+      "unit": "%p",
+      "decimals": 2,
+      "pct_since": "1990",
+      "range": [
+        -35,
+        75
+      ],
+      "sources": {
+        "연준 SLOOS": "https://fred.stlouisfed.org/series/DRTSCILM"
+      },
+      "zones": [
+        {
+          "max": -5,
+          "label": "완화",
+          "signal": 1,
+          "color": "blue",
+          "meaning": "대출 기준 완화 응답이 긴축 응답보다 많음"
+        },
+        {
+          "max": 5,
+          "label": "중립",
+          "signal": 0,
+          "color": "gray",
+          "meaning": "대출 기준의 순긴축 비율이 0에 가까움"
+        },
+        {
+          "max": null,
+          "label": "긴축",
+          "signal": -1,
+          "color": "red",
+          "meaning": "대출 기준 긴축 응답이 완화 응답보다 많음"
+        }
+      ],
+      "group": "financial_stability",
+      "better": "lower"
+    },
+
     {
       "id": "usdkrw", "group": "money", "star": true,
       "name": "원/달러 환율", "sub": "높을수록 원화 약세 · 외국인 환차손 부담",
@@ -24,14 +269,26 @@
     },
     {
       "id": "kr_curve", "group": "money",
-      "name": "한국 10Y − 3M", "sub": "국고채 10년 − 은행간 3개월 금리 · 월평균 · 국채 커브 대용",
-      "calc": {"src": "fred_spread", "a": "IRLTLT01KRM156N", "b": "IR3TIB01KRM156N"}, "freq": "monthly",
-      "unit": "%p", "decimals": 2, "better": "higher", "pct_since": "2005",
+      "name": "한국 10Y − 2Y", "sub": "국고채 10년물 − 2년물 · 한국은행 ECOS 일별",
+      "calc": {"src": "ecos_spread", "stat": "817Y002", "long": "010210000", "short": "010195000", "cycle": "D", "start": "20210310"}, "freq": "daily",
+      "unit": "%p", "decimals": 2, "better": "higher", "pct_since": "2021-03-10",
       "range": [-1.5, 2.5],
       "zones": [
-        {"max": 0,    "label": "역전", "color": "orange", "signal": -1, "meaning": "경기 둔화 우려 신호"},
-        {"max": 0.5,  "label": "평탄", "color": "gray",   "signal": 0,  "meaning": "장단기 금리 차이 작음"},
-        {"max": null, "label": "정상", "color": "green",  "signal": 1,  "meaning": "장기 금리가 충분히 높음 · 성장 기대"}
+        {"max": 0, "label": "역전", "color": "orange", "signal": -1, "meaning": "10년물 금리가 2년물 금리보다 낮음"},
+        {"max": 0.5, "label": "중립", "color": "gray", "signal": 0, "meaning": "장기 금리와 단기 금리의 차이가 작음"},
+        {"max": null, "label": "정상", "color": "green", "signal": 1, "meaning": "10년물 금리가 2년물 금리보다 0.50%p 이상 높음"}
+      ]
+    },
+    {
+      "id": "us_curve", "group": "money",
+      "name": "미국 10Y − 2Y", "sub": "미국 국채 10년물 − 2년물 · 세인트루이스 연은 FRED 일별",
+      "calc": {"src": "fred", "series": "T10Y2Y"}, "freq": "daily",
+      "unit": "%p", "decimals": 2, "better": "higher", "pct_since": "2021-03-10",
+      "range": [-1.5, 2.5],
+      "zones": [
+        {"max": 0, "label": "역전", "color": "orange", "signal": -1, "meaning": "10년물 금리가 2년물 금리보다 낮음"},
+        {"max": 0.5, "label": "중립", "color": "gray", "signal": 0, "meaning": "장기 금리와 단기 금리의 차이가 작음"},
+        {"max": null, "label": "정상", "color": "green", "signal": 1, "meaning": "10년물 금리가 2년물 금리보다 0.50%p 이상 높음"}
       ]
     },
     {
@@ -73,19 +330,6 @@
       ]
     },
     {
-      "id": "sox_gap", "group": "economy", "star": true,
-      "name": "반도체지수 200일선 대비", "sub": "필라델피아 반도체지수(SOX) 이격도 · 반도체 사이클 대용",
-      "calc": {"src": "yahoo_ma_gap", "ticker": "^SOX", "window": 200}, "freq": "daily",
-      "unit": "%", "decimals": 1, "better": "higher", "pct_since": "2010",
-      "range": [-30, 40],
-      "zones": [
-        {"max": -10,  "label": "하락 추세", "color": "red",     "signal": -1, "meaning": "반도체 업황 기대 약화"},
-        {"max": 0,    "label": "약화",     "color": "orange",  "signal": 0,  "meaning": "장기 추세 아래로 밀림"},
-        {"max": 20,   "label": "상승 추세", "color": "green",   "signal": 1,  "meaning": "반도체 사이클 우호"},
-        {"max": null, "label": "과열",     "color": "dkgreen", "signal": 0,  "meaning": "단기 과열 가능"}
-      ]
-    },
-    {
       "id": "hy", "group": "economy", "star": true,
       "name": "하이일드 스프레드", "sub": "미국 투기등급 회사채 가산금리 · 글로벌 신용 위험",
       "calc": {"src": "fred", "series": "BAMLH0A0HYM2"}, "freq": "daily",
@@ -113,9 +357,228 @@
     },
 
     {
+      "id": "us_real_gdp",
+      "group": "economy",
+      "name": "미국 실질 GDP 증가율",
+      "sub": "미국 경제분석국 · 전년 동기 대비 실질 GDP 증가율",
+      "calc": {
+        "src": "fred_yoy",
+        "series": "GDPC1"
+      },
+      "freq": "quarterly",
+      "unit": "%",
+      "decimals": 2,
+      "comparison_months": 12,
+      "pct_since": "2005",
+      "better": "higher",
+      "range": [
+        -10,
+        15
+      ],
+      "zones": [
+        {
+          "max": 0,
+          "label": "역성장",
+          "color": "red",
+          "signal": -1,
+          "meaning": "실질 GDP가 전년 동기보다 감소"
+        },
+        {
+          "max": 2,
+          "label": "완만한 성장",
+          "color": "gray",
+          "signal": 0,
+          "meaning": "실질 GDP 전년 동기 대비 증가율 0% 이상 2% 미만"
+        },
+        {
+          "max": null,
+          "label": "성장",
+          "color": "green",
+          "signal": 1,
+          "meaning": "실질 GDP 전년 동기 대비 증가율 2% 이상"
+        }
+      ]
+    },
+    {
+      "id": "philly_fed",
+      "group": "economy",
+      "name": "필라델피아 연은 제조업 경기",
+      "sub": "제조업 일반 경기활동 확산지수 · 0 초과는 개선 응답 우세 · 대시보드 중립 구간은 −5 이상 5 미만",
+      "calc": {
+        "src": "fred",
+        "series": "GACDFSA066MSFRBPHI"
+      },
+      "freq": "monthly",
+      "unit": "",
+      "decimals": 2,
+      "comparison_months": 1,
+      "pct_since": "2005",
+      "stale_days": 75,
+      "better": "higher",
+      "range": [
+        -50,
+        60
+      ],
+      "zones": [
+        {
+          "max": -5,
+          "label": "제조업 약화",
+          "color": "red",
+          "signal": -1,
+          "meaning": "제조업 경기활동 악화 응답 우세"
+        },
+        {
+          "max": 5,
+          "label": "중립",
+          "color": "gray",
+          "signal": 0,
+          "meaning": "일반 경기활동 확산지수가 0에 가까운 구간"
+        },
+        {
+          "max": null,
+          "label": "제조업 개선",
+          "color": "green",
+          "signal": 1,
+          "meaning": "제조업 경기활동 개선 응답 우세"
+        }
+      ]
+    },
+    {
+      "id": "umich_sentiment",
+      "group": "economy",
+      "name": "미시간대 소비자심리지수",
+      "sub": "미시간대 소비자 조사 · 지수 수준 · 2005~2025년 25·75백분위 기준",
+      "calc": {
+        "src": "fred",
+        "series": "UMCSENT"
+      },
+      "freq": "monthly",
+      "unit": "",
+      "decimals": 2,
+      "comparison_months": 1,
+      "pct_since": "2005",
+      "stale_days": 75,
+      "better": "higher",
+      "range": [
+        40,
+        110
+      ],
+      "zones": [
+        {
+          "max": 69.33,
+          "label": "소비심리 부진",
+          "color": "red",
+          "signal": -1,
+          "meaning": "과거 하위 구간의 소비자심리"
+        },
+        {
+          "max": 91.23,
+          "label": "중립",
+          "color": "gray",
+          "signal": 0,
+          "meaning": "과거 분포의 중간 구간"
+        },
+        {
+          "max": null,
+          "label": "소비심리 양호",
+          "color": "green",
+          "signal": 1,
+          "meaning": "과거 상위 구간의 소비자심리"
+        }
+      ]
+    },
+    {
+      "id": "durable_orders",
+      "group": "economy",
+      "name": "내구재 수주 증가율",
+      "sub": "미국 인구조사국 · 계절조정 명목 수주액의 전년 동월 대비 증가율 · 대시보드 중립 구간은 −2% 이상 2% 미만",
+      "calc": {
+        "src": "fred_yoy",
+        "series": "DGORDER"
+      },
+      "freq": "monthly",
+      "unit": "%",
+      "decimals": 2,
+      "comparison_months": 3,
+      "pct_since": "2005",
+      "stale_days": 75,
+      "better": "higher",
+      "range": [
+        -35,
+        45
+      ],
+      "zones": [
+        {
+          "max": -2,
+          "label": "수주 감소",
+          "color": "red",
+          "signal": -1,
+          "meaning": "명목 수주액이 전년 동월보다 2% 넘게 감소"
+        },
+        {
+          "max": 2,
+          "label": "보합",
+          "color": "gray",
+          "signal": 0,
+          "meaning": "전년 동월 대비 명목 수주액 변동이 작은 구간"
+        },
+        {
+          "max": null,
+          "label": "수주 증가",
+          "color": "green",
+          "signal": 1,
+          "meaning": "명목 수주액이 전년 동월보다 2% 이상 증가"
+        }
+      ]
+    },
+    {
+      "id": "household_debt_service",
+      "group": "economy",
+      "name": "가계부채 상환비율",
+      "sub": "미국 연준 · 가처분소득 대비 모기지와 소비자부채 원리금 상환액 비율 · 2005~2025년 25·75백분위 기준",
+      "calc": {
+        "src": "fred",
+        "series": "TDSP"
+      },
+      "freq": "quarterly",
+      "unit": "%",
+      "decimals": 2,
+      "comparison_months": 12,
+      "pct_since": "2005",
+      "better": "lower",
+      "range": [
+        8,
+        16
+      ],
+      "zones": [
+        {
+          "max": 11.21,
+          "label": "상환 부담 낮음",
+          "color": "green",
+          "signal": 1,
+          "meaning": "가처분소득 대비 부채 상환 부담이 과거 하위 구간"
+        },
+        {
+          "max": 14.18,
+          "label": "중립",
+          "color": "gray",
+          "signal": 0,
+          "meaning": "과거 분포의 중간 구간"
+        },
+        {
+          "max": null,
+          "label": "상환 부담 높음",
+          "color": "red",
+          "signal": -1,
+          "meaning": "가처분소득 대비 부채 상환 부담이 과거 상위 구간"
+        }
+      ]
+    },
+
+    {
       "id": "breadth200", "group": "internals", "star": true,
-      "name": "200일선 위 종목 %", "sub": "대형주 표본 중 장기 추세 위 비율",
-      "calc": {"src": "breadth", "window": 200}, "freq": "daily",
+      "name": "240일선 위 종목 %", "sub": "대형주 표본 중 장기 추세 위 비율",
+      "calc": {"src": "breadth", "window": 240}, "freq": "daily",
       "unit": "%", "decimals": 1, "better": "higher", "pct_since": "1y",
       "range": [0, 100],
       "zones": [
@@ -128,8 +591,8 @@
     },
     {
       "id": "breadth50", "group": "internals",
-      "name": "50일선 위 종목 %", "sub": "대형주 표본 중 단기 추세 위 비율",
-      "calc": {"src": "breadth", "window": 50}, "freq": "daily",
+      "name": "60일선 위 종목 %", "sub": "대형주 표본 중 단기 추세 위 비율",
+      "calc": {"src": "breadth", "window": 60}, "freq": "daily",
       "unit": "%", "decimals": 1, "better": "higher", "pct_since": "1y",
       "range": [0, 100],
       "zones": [
@@ -142,8 +605,8 @@
     },
     {
       "id": "kospi_gap", "group": "internals",
-      "name": "코스피 200일선 이격도", "sub": "지수가 장기 평균에서 떨어진 정도",
-      "calc": {"src": "yahoo_ma_gap", "ticker": "^KS11", "window": 200}, "freq": "daily",
+      "name": "코스피 240일선 이격도", "sub": "지수가 장기 평균에서 떨어진 정도",
+      "calc": {"src": "yahoo_ma_gap", "ticker": "^KS11", "window": 240}, "freq": "daily",
       "unit": "%", "decimals": 1, "better": "higher", "pct_since": "2010",
       "range": [-25, 25],
       "zones": [

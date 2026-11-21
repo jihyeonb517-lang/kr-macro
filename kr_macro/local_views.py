@@ -74,16 +74,41 @@ CSS = """
 """
 
 
+def render_market_history(name, history, *, verdicts=True):
+    observations = sum(point[1] is not None for point in history["points"]) if history else 0
+    if observations < 2:
+        return '<p class="market-trend-unavailable">추세를 그릴 연속 관측값이 부족합니다.</p>'
+
+    payload = json.dumps(history, ensure_ascii=False, allow_nan=False, separators=(",", ":")).replace("<", "\\u003c")
+    caption = f'{history["period"]} · 관측 {observations}개'
+    note = "실선 관측값 · 점선 판정 경계 · 점 판정 변경" if verdicts else "전년 동월 대비"
+    label = f"{name} 추세와 판정 경계" if verdicts else f"{name} 추세"
+    title = html.escape(label, quote=True)
+    return (
+        '<figure class="market-trend">'
+        f'<figcaption><b>{html.escape(caption)}</b><span>{note}</span></figcaption>'
+        f'<div class="market-trend-chart" role="img" aria-label="{title}"></div>'
+        f'<script type="application/json" class="market-trend-data">{payload}</script>'
+        '</figure>'
+    )
+
+
 MARKET_CSS = """
 #t1 [hidden]{display:none!important}
-.market-summary,.market-evidence{container-type:inline-size}
-.market-summary h2,.market-evidence h2,.market-section h3,.market-label h4{margin:0}
-.market-summary h2{font-size:14px;color:var(--text-2);font-weight:650}
-.market-headline{font-size:clamp(18px,2.7cqw,26px);font-weight:750;line-height:1.45;margin:5px 0 17px;letter-spacing:-.025em;word-break:keep-all;overflow-wrap:anywhere}
-.market-groups{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
+.market-evidence{container-type:inline-size}
+.market-evidence h2,.market-label h4{margin:0}
+.market-workspace{display:grid;grid-template-areas:"groups" "evidence";gap:14px;align-items:start}
+.market-workspace>.card{margin-bottom:0;min-width:0}
+.market-evidence{grid-area:evidence}
+.market-groups{grid-area:groups;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px;min-width:0}
+@media (min-width:900px){
+  .market-workspace{grid-template-columns:clamp(202px,18vw,252px) minmax(0,1fr);
+    grid-template-areas:"groups evidence";gap:14px 18px}
+  .market-groups{position:sticky;top:16px;grid-template-columns:minmax(0,1fr)}
+}
 .market-group-card{font:inherit;text-align:left;min-width:0;display:grid;align-content:start;gap:4px;padding:11px 13px;border:1px solid var(--border);border-radius:12px;background:var(--bg);color:var(--text);cursor:pointer;transition:background-color .15s,border-color .15s}
 .market-group-card:hover,.market-group-card[aria-pressed=true]{background:var(--surface-2)}
-.market-group-card[aria-pressed=true]{border-color:var(--text-3)}
+.market-group-card[aria-pressed=true]{border-color:var(--accent);box-shadow:inset 3px 0 var(--accent)}
 .market-group-card strong{font-size:19px;line-height:1.25;margin:2px 0}
 .market-group-card small{color:var(--text-3);font-size:12px}
 .market-group-name{display:flex;justify-content:space-between;gap:6px;align-items:baseline;font-weight:650}
@@ -95,9 +120,7 @@ MARKET_CSS = """
 .market-recent li + li{margin-top:4px}
 .market-recent a{color:var(--text);text-decoration:underline;text-underline-offset:3px;overflow-wrap:anywhere}
 .market-recent time{color:var(--text-2);white-space:nowrap}
-.market-kpis{margin-top:13px;color:var(--text-2)}
-.market-kpis summary,.market-guide summary{cursor:pointer;width:fit-content}
-.market-kpis .kpis{margin-top:8px;line-height:1.75;overflow-wrap:anywhere}
+.market-guide summary{cursor:pointer;width:fit-content}
 .market-evidence-head{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px}
 .market-evidence h2{font-size:19px;scroll-margin-top:16px;width:fit-content}
 .market-evidence h2:focus-visible,.market-row:focus-visible{outline:2px solid var(--accent);outline-offset:3px;border-radius:4px}
@@ -107,9 +130,7 @@ MARKET_CSS = """
 .market-evidence button[aria-pressed=true]{border-color:var(--text-3);font-weight:700}
 .market-result{font-size:12px;color:var(--text-3);margin:7px 0 12px}
 .market-empty{background:var(--bg);border:1px dashed var(--border);border-radius:10px;color:var(--text-2);padding:13px;margin:10px 0}
-.market-section + .market-section{margin-top:16px}
 .market-section-head{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 9px;padding:8px 10px;background:var(--surface-2);border-radius:9px}
-.market-section-head h3{font-size:15px}
 .market-section-head span{font-weight:700}
 .market-section-head small{color:var(--text-2);font-size:11px}
 .market-row{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,1fr) minmax(0,1.5fr) minmax(86px,.5fr);gap:12px;align-items:start;padding:12px 8px;border-bottom:1px solid var(--border);overflow-wrap:anywhere;scroll-margin-top:16px}
@@ -117,7 +138,6 @@ MARKET_CSS = """
 .market-row:target,.market-row:focus{background:var(--surface-2)}
 .market-row small{display:block;font-size:12px;color:var(--text-3);line-height:1.45}
 .market-label h4{font-size:14px;color:var(--text);font-weight:700}
-.market-priority{color:var(--text-2)}
 .market-reading,.market-rank{font-variant-numeric:tabular-nums}
 .market-reading>b{font-size:19px;font-weight:750;color:var(--text);line-height:1.22}
 .market-reading time{white-space:nowrap}
@@ -153,13 +173,12 @@ MARKET_CSS = """
 .market-guide ul{padding-left:18px;margin:8px 0 0}
 .market-guide li+li{margin-top:5px}
 @container (max-width:650px){
-  .market-groups{grid-template-columns:repeat(2,minmax(0,1fr))}
   .market-row{grid-template-columns:repeat(2,minmax(0,1fr));gap:9px;padding:12px 2px}
   .market-verdict,.market-row-details{grid-column:1/-1}
   .market-row-details summary{min-height:44px;padding:11px 10px}
   .market-transition-date{display:block}
   .market-unavailable{grid-column:1/-1}
-  .market-filters button,.market-scope{min-height:44px}
+  .market-filters button{min-height:44px}
 }
 @media (prefers-reduced-motion:reduce){.market-group-card{transition:none}}
 """
@@ -172,12 +191,13 @@ MARKET_SCRIPT = """
   const cards = [...market.querySelectorAll('[data-market-group]')];
   const sections = [...market.querySelectorAll('[data-market-section]')];
   const filters = [...market.querySelectorAll('[data-market-filter]')];
+  const guide = market.querySelector('.market-evidence > .market-guide');
   const filterLabels = new Map(filters.map(button => [button, button.textContent]));
-  const reset = market.querySelector('[data-market-reset]');
+  const defaultGroup = market.dataset.defaultMarketGroup;
   const title = market.querySelector('#market-evidence-title');
   const status = market.querySelector('.market-result');
   const empty = market.querySelector('.market-empty');
-  let group = '';
+  let group = defaultGroup;
   let filter = 'all';
 
   function update() {
@@ -185,7 +205,7 @@ MARKET_SCRIPT = """
     let unavailable = 0;
     const counts = {all: 0, negative: 0, changed: 0};
     for (const section of sections) {
-      const inGroup = !group || group === section.dataset.marketSection;
+      const inGroup = group === section.dataset.marketSection;
       let visible = 0;
       for (const row of section.querySelectorAll('.market-row')) {
         const {state, change} = row.dataset;
@@ -201,7 +221,7 @@ MARKET_SCRIPT = """
         row.hidden = !inGroup || !matches;
         if (!row.hidden) visible++;
       }
-      section.hidden = visible === 0;
+      section.hidden = !inGroup;
       count += visible;
     }
     for (const card of cards) card.setAttribute('aria-pressed', card.dataset.marketGroup === group);
@@ -210,13 +230,13 @@ MARKET_SCRIPT = """
       button.setAttribute('aria-pressed', String(key === filter));
       button.textContent = filterLabels.get(button) + ' ' + counts[key];
     }
-    reset.hidden = !group;
-    const selected = cards.find(card => card.dataset.marketGroup === group);
-    const scope = selected ? selected.querySelector('.market-group-name').firstChild.textContent + ' · ' : '';
+    const selected = sections.find(section => section.dataset.marketSection === group);
+    title.textContent = selected.getAttribute('aria-label');
+    guide.hidden = selected.hasAttribute('data-market-custom-guide');
     const missing = filter === 'changed' && unavailable ? ' · 비교 자료 없음 ' + unavailable + '개' : '';
-    status.textContent = scope + count + '개 지표' + missing;
+    status.textContent = count + '개 지표' + missing;
     empty.hidden = count !== 0;
-    if (!count) {
+    if (!empty.hidden) {
       empty.textContent = filter === 'negative' ? '이 범위에 현재 부정 판정이 없습니다.' :
         filter === 'changed' ? '비교 가능한 지표에서 확인된 판정 변경이 없습니다.' : '표시할 지표가 없습니다.';
     }
@@ -244,7 +264,7 @@ MARKET_SCRIPT = """
     });
     const boundaryNumber = new Intl.NumberFormat('ko-KR', {maximumFractionDigits: Math.max(4, decimals)});
     const showValue = value => number.format(value) + units;
-    const values = points.map(point => point[1]).concat(boundaries);
+    const values = points.map(point => point[1]).filter(Number.isFinite).concat(boundaries);
     const lower = Math.min(...values);
     const upper = Math.max(...values);
     const padding = (upper - lower) * 0.13 || Math.pow(10, -decimals);
@@ -277,7 +297,8 @@ MARKET_SCRIPT = """
           const point = points[dates.indexOf(params[0]?.axisValue)];
           if (!point) return '';
           const [date, value, label, previous] = point;
-          return date + '\\n' + showValue(value) + ' · ' + (previous ? previous + ' → ' : '') + label;
+          if (value === null) return date + '\\n자료 없음';
+          return date + '\\n' + showValue(value) + (label ? ' · ' + (previous ? previous + ' → ' : '') + label : '');
         },
       },
       xAxis: {
@@ -340,14 +361,11 @@ MARKET_SCRIPT = """
       group = card.dataset.marketGroup;
       filter = 'all';
       update();
-      jump(title);
+      const heading = title.getBoundingClientRect();
+      if (heading.top < 0 || heading.bottom > window.innerHeight) jump(title);
     } else if (button) {
       filter = button.dataset.marketFilter;
       update();
-    } else if (event.target === reset) {
-      group = '';
-      update();
-      title.focus({preventScroll: true});
     } else if (link && !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey) {
       const row = document.getElementById(link.hash.slice(1));
       if (!row) return;
@@ -357,6 +375,11 @@ MARKET_SCRIPT = """
       update();
       jump(row);
     }
+  });
+  document.querySelector('.dataset-list [data-t="t1"]')?.addEventListener('click', () => {
+    group = defaultGroup;
+    filter = 'all';
+    update();
   });
   update();
 })();

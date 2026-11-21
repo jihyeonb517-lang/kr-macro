@@ -28,8 +28,8 @@ FED_URL = "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm"
 BOJ_URL = "https://www.boj.or.jp/en/mopo/mpmsche_minu/index.htm"
 BOK_URL = "https://www.bok.or.kr/portal/singl/crncyPolicyDrcMtg/listYear.do?mtgSe=A&menuNo=200755&pYear={year}"
 
-# 구분: 미국 · 한국 · 중국대만 · 일본 · 유럽 · 기업 · 시장(국내외 시장 규칙 일정)
-REGIONS = {"us": "미국", "kr": "한국", "cn": "중국·대만", "jp": "일본", "eu": "유럽", "co": "기업", "mk": "시장"}
+# 구분: 미국 · 한국 · 중국 · 대만 · 일본 · 유럽 · 기업 · 시장(국내외 시장 규칙 일정)
+REGIONS = {"us": "미국", "kr": "한국", "cn": "중국", "tw": "대만", "jp": "일본", "eu": "유럽", "co": "기업", "mk": "시장"}
 
 # Yahoo 지표 이름(끝의 * 와 공백 제거) → (kind, 제목, 구분, 중요도 1~3, 단위). 같은 발표의 세부 항목은 YAHOO_DETAILS로 묶는다.
 YAHOO_EVENTS = {
@@ -64,8 +64,8 @@ YAHOO_EVENTS = {
     ("CN", "CPI YY"): ("cn_cpi", "중국 소비자물가", "cn", 1, "%"),
     ("CN", "GDP YY"): ("cn_gdp", "중국 GDP", "cn", 2, "%"),
     ("CN", "Industrial Output YY"): ("cn_act", "중국 산업생산·소매판매", "cn", 1, "%"),
-    ("TW", "Exports of Goods"): ("tw_export", "대만 수출", "cn", 2, " 십억 달러"),
-    ("TW", "Export Orders YY"): ("tw_orders", "대만 수출주문", "cn", 2, "%"),
+    ("TW", "Exports of Goods"): ("tw_export", "대만 수출", "tw", 2, " 십억 달러"),
+    ("TW", "Export Orders YY"): ("tw_orders", "대만 수출주문", "tw", 2, "%"),
     ("JP", "CPI, Core Nationwide YY"): ("jp_cpi", "일본 근원 소비자물가", "jp", 1, "%"),
     ("JP", "GDP QQ"): ("jp_gdp", "일본 GDP", "jp", 1, "%"),
     ("JP", "Exports YY"): ("jp_trade", "일본 수출", "jp", 1, "%"),

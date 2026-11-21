@@ -5,16 +5,18 @@ from html import escape
 from pathlib import Path
 
 from dashboard_theme import appearance_menu
+import industry_exports
 
 
 ICONS = {
-    "market": "↗", "sectors": "▦", "funding": "⇄", "trade": "▥", "memory": "▣", "companies": "▤",
-    "research": "≡", "reports": "▱", "calendar": "▦", "appearance": "◐", "collapse": "«", "expand": "»",
+    "market": "↗", "sectors": "▦", "flow": "⇄", "funding": "▤", "trade": "▥", "memory": "▣", "companies": "▤",
+    "reports": "▱", "calendar": "▦", "appearance": "◐", "collapse": "«", "expand": "»",
 }
 ICON_FILES = ((".svg", "image/svg+xml"), (".png", "image/png"), (".webp", "image/webp"))
 # Source image width and the square viewport enclosing the glyph (left, top, size).
 ICON_VIEWPORTS = {
-    "research": (162, 57, 34, 52), "companies": (135, 37, 18, 59),
+    "flow": (126, 38, 13, 56),
+    "companies": (135, 37, 18, 59),
     "trade": (155, 52, 29, 55), "memory": (166, 62, 34, 52),
     "funding": (125, 31, 29, 62),
     "market": (140, 46, 28, 52), "calendar": (160, 63, 22, 55),
@@ -40,20 +42,25 @@ def toolbar_icon(name):
     return f'<span class="workspace-icon" data-icon="{name}" aria-hidden="true">{ICONS[name]}</span>'
 
 
-def navigation(companies, company_search=""):
+def navigation(companies, company_search="", *, flow_etfs=()):
     groups = [
         ("market", "시장·매크로", [
-            ("t1", "장세 판단", "주요 매크로 지표와 시장 상태"),
+            ("t1", "장세 판단", ""),
         ]),
         ("sectors", "섹터 히트맵", [
             ("sector-heatmap", "섹터 히트맵", ""),
         ]),
-        ("funding", "수급·자금", [
+        ("flow", "수급", [("stock-flow-all", "전체 종목", "코스피 100 · 코스닥 50")] + [
+            (f'flow-{etf["ticker"]}', etf["name"], etf["ticker"])
+            for etf in flow_etfs
+        ]),
+        ("funding", "자금", [
             ("t4", "신용잔고·예탁금", "시장별 신용잔고와 투자자예탁금"),
         ]),
         ("trade", "수출", [
             ("t5", "반도체 수출", "전체 수출과 품목별 실적"),
             ("cosmetics", "화장품 수출", "화장품·미용 품목별 실적"),
+            *industry_exports.navigation(),
         ]),
         ("memory", "메모리", [
             ("memory", "DDR5 현물가", "DDR5 16Gb 칩 가격 추이"),
@@ -62,9 +69,6 @@ def navigation(companies, company_search=""):
             (f's-{company["id"]}', company["tab"], "")
             for company in companies
         ] + ([("s-catalog", "종목 상세", "검색 결과")] if company_search else [])),
-        ("research", "뉴스", [
-            ("t3", "삼전닉스 뉴스", "삼성전자·SK하이닉스 주요 기사"),
-        ]),
         ("reports", "증권사 리포트", [
             (f'r-{company["id"]}', company["name"], "투자의견·목표주가·리포트")
             for company in companies
@@ -185,8 +189,8 @@ body{font-size:14px}
 .dashboard-main>.meta{margin-top:10px}
 .workspace-grid{display:grid;grid-template-columns:minmax(184px,220px) minmax(0,1fr);gap:20px;
   align-items:start;margin-top:20px}
-.workspace-grid:has(> .workspace-detail > #t1.on){grid-template-columns:minmax(0,1fr)}
-.workspace-grid:has(> .workspace-detail > #t1.on)>.dataset-pane{display:none}
+.workspace-grid:has(> .workspace-detail > :is(#t1,#t4,#investor-flow).on){grid-template-columns:minmax(0,1fr)}
+.workspace-grid:has(> .workspace-detail > :is(#t1,#t4,#investor-flow).on)>.dataset-pane{display:none}
 .dataset-pane{min-width:0;position:sticky;top:18px;align-self:start;
   padding:15px;background:var(--surface);border:1px solid var(--border);border-radius:14px}
 .dataset-pane h2{margin:1px 6px 12px;font-size:14px;color:var(--text);font-weight:700}
@@ -204,6 +208,18 @@ body{font-size:14px}
   background:var(--surface-2);border-color:transparent;color:var(--text)}
 :root[data-theme="dark"] .dataset-list button.on small{color:var(--text-2)}
 :root[data-theme="dark"] .dataset-list button:focus-visible{outline-color:var(--text-2)}
+
+.workspace-grid:has(> .workspace-detail > :is(.flow-etf,#stock-flow-all).on) .dataset-list{
+  max-height:max(220px,calc(100dvh - 90px));overflow:auto}
+@media (max-width:730px){
+  .workspace-grid:has(> .workspace-detail > :is(.flow-etf,#stock-flow-all).on) .dataset-list{max-height:210px}
+}
+.flow-etf-date{margin:0;color:var(--text-2);font-size:12px}
+.flow-etf-facts{display:flex;flex-wrap:wrap;gap:12px 30px;margin:12px 0 0;font-variant-numeric:tabular-nums}
+.flow-etf-facts dt{color:var(--text-2);font-size:12px}
+.flow-etf-facts dd{margin:4px 0 0;font-weight:700;font-size:17px}
+.flow-etf-facts [data-change="up"]{color:var(--bad)}
+.flow-etf-facts [data-change="down"]{color:var(--series-1)}
 .workspace-detail{min-width:0}
 .workspace-detail .tab>.card{border-radius:16px}
 .workspace-detail .gcards{grid-template-columns:repeat(2,minmax(0,1fr))}

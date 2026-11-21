@@ -1,5 +1,7 @@
 """Local company directory and lazily loaded stock pages."""
 
+import csv
+from datetime import date
 import html
 import json
 import os
@@ -17,6 +19,8 @@ MARKETS = (
 )
 KRX_DIRECTORY_URL = "https://data-dbg.krx.co.kr/svc/apis/sto/"
 PRICE_COLUMNS = ["Open", "High", "Low", "Close", "Volume"]
+INDEX_DIRECTORY = ".index-company-directory.json"
+INDEX_MARKETS = (("KOSPI", "KS", 200), ("KOSDAQ", "KQ", 150))
 
 
 def write_atomic(path, text):
@@ -103,6 +107,40 @@ def load_directory(out, date, key):
     return cached
 
 
+def import_index_members(out, asof, files):
+    """Save a pair of KRX 지수구성종목 CSV exports from the same date."""
+    observed = date.fromisoformat(asof).isoformat()
+    members = []
+    for path, (market, suffix, nominal) in zip(files, INDEX_MARKETS, strict=True):
+        raw = path.read_bytes()
+        try:
+            content = raw.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            content = raw.decode("cp949")
+        rows = csv.DictReader(content.splitlines())
+        if not {"종목코드", "종목명", "상장시가총액"}.issubset(rows.fieldnames or ()):
+            raise ValueError(f"{market}: KRX 지수구성종목 CSV의 열이 필요합니다")
+        group = []
+        for row in rows:
+            ticker = (row["종목코드"] or "").strip()
+            name = (row["종목명"] or "").strip()
+            cap = (row["상장시가총액"] or "").replace(",", "").strip()
+            if cap in ("", "-", "—"):
+                cap = "0"
+            if not re.fullmatch(r"[0-9A-Z]{6}", ticker) or not name or not cap.isdecimal():
+                raise ValueError(f"{market}: 종목코드, 종목명 또는 시가총액을 확인할 수 없습니다")
+            group.append({"id": ticker, "ticker": ticker, "name": name, "tab": name,
+                          "eng": "", "market": market, "yahoo": f"{ticker}.{suffix}", "cap": int(cap)})
+        if len(group) < nominal * 0.95 or len(group) > nominal * 1.05:
+            raise ValueError(f"{market}: 지수 구성종목 전체 행이 필요합니다 ({len(group)}개)")
+        members.extend(sorted(group, key=lambda row: (-row["cap"], row["ticker"])))
+    if len({row["ticker"] for row in members}) != len(members):
+        raise ValueError("구성종목 파일에 중복 종목코드가 있습니다")
+    result = {"asof": observed, "members": members}
+    write_atomic(out / INDEX_DIRECTORY, json.dumps(result, ensure_ascii=False, separators=(",", ":")))
+    return result
+
+
 def update_prices(out, directory, included):
     cache = out / ".company-prices"
     members = [entry for entry in directory.get("members", []) if entry["ticker"] not in included]
@@ -166,8 +204,9 @@ def directory_rows(directory, companies, asset_folder=None, quotes=None):
     return rows
 
 
-def search_markup(date, count):
-    detail = f'시총 상위 {count}종목 · {html.escape(date)} 기준' if date else "기업 분석 종목"
+def search_markup(date, count, *, index_based=False):
+    universe = "코스피200·코스닥150" if index_based else "시총 상위"
+    detail = f'{universe} {count}종목 · {html.escape(date)} 기준' if date else "기업 분석 종목"
     return f"""
 <div id="company-search" hidden>
   <label for="company-query">종목 검색</label>
